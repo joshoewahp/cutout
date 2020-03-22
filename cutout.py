@@ -42,53 +42,18 @@ warnings.filterwarnings('ignore', category=ErfaWarning, append=True)
 warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
 
 config = configparser.ConfigParser()
-config.read('/import/ada1/jpri6587/aux_data/config.ini')
+config.read('./config/config.ini')
 
 aux_path = config['DATA']['aux_path']
 vlass_path = config['DATA']['vlass_path']
 cutout_cache = config['DATA']['cutout_cache']
 
-SURVEYS = pd.read_json('/import/ada1/jpri6587/phd/code/config/surveys.json')
+SURVEYS = pd.read_json('./config/surveys.json')
 SURVEYS.set_index('survey', inplace=True)
 
 # METADATA
 # -------------------------------------------------
-root_paths = {
-    'vastp1I': config['DATA']['stokesI_path_vastp1-mm'],
-    'vastp2I': config['DATA']['stokesI_path_vastp2-mm'],
-    'vastp3xI': config['DATA']['stokesI_path_vastp3x-mm'],
-    'vastp4xI': config['DATA']['stokesI_path_vastp4x-mm'],
-    'vastp5xI': config['DATA']['stokesI_path_vastp5x-mm'],
-    'vastp6xI': config['DATA']['stokesI_path_vastp6x-mm'],
-    'vastp7xI': config['DATA']['stokesI_path_vastp7x-mm'],
-    'vastp8I': config['DATA']['stokesI_path_vastp8-mm'],
-    'vastp9I': config['DATA']['stokesI_path_vastp9-mm'],
-    'vastp10xI': config['DATA']['stokesI_path_vastp10x-mm'],
-    'vastp11xI': config['DATA']['stokesI_path_vastp11x-mm'],
-    'vastp1V': config['DATA']['stokesV_path_vastp1-mm'],
-    'vastp2V': config['DATA']['stokesV_path_vastp2-mm'],
-    'racsI': config['DATA']['stokesI_path_aug2019-mm'],
-    'racsV': config['DATA']['stokesV_path_aug2019-mm'],
-    'vlass': config['DATA']['vlass_path'],
-}
-field_paths = {
-    'vastp1I': 'vastp1-mm_fields.csv',
-    'vastp2I': 'vastp2-mm_fields.csv',
-    'vastp3xI': 'vastp3x-mm_fields.csv',
-    'vastp4xI': 'vastp4x-mm_fields.csv',
-    'vastp5xI': 'vastp5x-mm_fields.csv',
-    'vastp6xI': 'vastp6x-mm_fields.csv',
-    'vastp7xI': 'vastp7x-mm_fields.csv',
-    'vastp8I': 'vastp8-mm_fields.csv',
-    'vastp9I': 'vastp9-mm_fields.csv',
-    'vastp10xI': 'vastp10x-mm_fields.csv',
-    'vastp11xI': 'vastp11x-mm_fields.csv',
-    'vastp1V': 'vastp1-mm_fields.csv',
-    'vastp2V': 'vastp2-mm_fields.csv',
-    'racsI': 'aug2019-mm_fields.csv',
-    'racsV': 'aug2019-mm_fields.csv',
-    'vlass': 'vlass_fields.csv',
-}
+
 sv_surveys = {
     '2massh': '2MASS-H',
     '2massj': '2MASS-J',
@@ -117,12 +82,6 @@ sv_surveys = {
     'wise22': 'WISE 22',
 }
 
-SURVEYS = pd.read_json('/import/ada1/jpri6587/phd/code/config/surveys.json')
-SURVEYS.set_index('survey', inplace=True)
-
-seps = {'racsI': 5 * u.deg, 'racsV': 5 * u.deg, 'vlass': 1 * u.deg,
-        'vastp1I': 5 * u.deg, 'vastp1V': 5 * u.deg       
-        'vastp2I': 5 * u.deg, 'vastp2V': 5 * u.deg}
 # -------------------------------------------------
 
 Simbad.add_votable_fields('otype', 'ra(d)', 'dec(d)', 'parallax',
@@ -190,7 +149,7 @@ class Cutout:
     def _get_source(self):
         try:
             pattern = re.compile(r'\S*(\d{4}[+-]\d{2}[AB])\S*')
-            selpath = config['DATA'][f'selavy_path_{self.survey}']
+            selpath = SURVEYS.loc[self.survey]['selavy']
             sel = glob.glob(f'{selpath}/*components.txt')
             sel = [s for s in sel if pattern.sub(r'\1', self.filepath) in s]
 
@@ -229,7 +188,7 @@ class Cutout:
         if not os.path.exists(cutout_cache + self.survey):
             msg = f"{cutout_cache}{self.survey} cutout directory does not exist, creating."
             self.logger.info(msg)
-            os.mkdir(cutout_cache + self.survey)
+            os.makedirs(cutout_cache + self.survey)
 
         if os.path.isfile(self.survey):
             self._get_local_cutout()
@@ -251,20 +210,31 @@ class Cutout:
         assert len(
             fields) > 0, f"No fields located at {self.position.ra:.2f}, {self.position.dec:.2f}"
         closest = fields[fields.dist_field_centre == fields.dist_field_centre.min()].iloc[0]
+        image_path = SURVEYS.loc[self.survey]['images']
 
-        if self.survey == 'vlass':
-            self.filepath = f'{closest.epoch}/{closest.tile}/{closest.image}/{closest.filename}'
+        if self.survey == 'vlassI':
+            filepath = f'{closest.epoch}/{closest.tile}/{closest.image}/{closest.filename}'
+            image_path = vlass_path
         elif 'racs' in self.survey:
-            self.filepath = f'RACS_test4_1.05_{closest.field}.fits'
+            filepath = f'RACS_test4_1.05_{closest.field}.fits'
             pol = self.survey[-1]
         elif 'vast' in self.survey:
             epoch = self.survey[-2]
             pol = self.survey[-1]
-            self.filepath = f'VAST_{closest.field}.EPOCH0{epoch}.{pol}.fits'
+            filepath = f'VAST_{closest.field}.EPOCH0{epoch}.{pol}.fits'
         else:
-            raise ValueError(f'{self.survey} not supported locally.')
+            filepath = f'*{closest.field}*0.restored.fits'
 
-        with fits.open(root_paths[self.survey] + self.filepath) as hdul:
+        try:
+            self.filepath = glob.glob(image_path + filepath)[0]
+        except IndexError:
+            print(survey)
+            print(image_path)
+            print(filepath)
+            print('-------------')
+            raise FITSException(f'Could not match {self.survey} image filepath.')
+
+        with fits.open(self.filepath) as hdul:
             self.header, data = hdul[0].header, hdul[0].data
             wcs = WCS(self.header, naxis=2)
             self.mjd = Time(self.header['DATE']).mjd
@@ -412,12 +382,14 @@ class Cutout:
     def _find_image(self):
         """Return DataFrame of survey fields containing coord."""
 
-        image_df = pd.read_csv(aux_path + field_paths[self.survey])
+        survey = self.survey[:-1]
+        image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
         beam_centre = SkyCoord(ra=image_df['cr_ra_pix'], dec=image_df['cr_dec_pix'],
                                unit=u.deg)
         image_df['dist_field_centre'] = beam_centre.separation(self.position).deg
 
-        return image_df[image_df.dist_field_centre < seps.get(self.survey, 5*u.deg)].reset_index(drop=True)
+        sep = 1 * u.degree if self.survey == 'vlassI' else 5 * u.degree
+        return image_df[image_df.dist_field_centre < sep].reset_index(drop=True)
 
     def _obfuscate(self):
         """Remove all coordinates and identifying information."""
