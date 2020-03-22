@@ -714,6 +714,7 @@
     {
 	"survey": "sumss",
 	"name": "SUMSS",
+	"sv": "SUMSS 843 MHz",
 	"cat": "VIII/81B/sumss212",
 	"nu": 843,
 	"rms": 1.2,
@@ -736,6 +737,7 @@
     {
 	"survey": "nvss",
 	"name": "NVSS",
+	"sv": "NVSS",
 	"cat": "VIII/65/nvss",
         "nu": 1400,
         "rms": 0.45,
@@ -758,6 +760,7 @@
     {
 	"survey": "tgss",
 	"name": "TGSS",
+	"sv": "TGSS ADR1",
 	"cat": "J/A+A/598/A78/table3",
         "nu": 150,
         "rms": 3.5,
@@ -780,6 +783,7 @@
     {
 	"survey": "gleam",
 	"name": "GLEAM",
+	"sv": "GLEAM 139-170 MHz",
 	"cat": "VIII/100/gleamegc",
         "nu": 200,
         "rms": 40,
@@ -861,6 +865,7 @@
     {
 	"survey": "vla_first",
 	"cat": "",
+	"sv": "VLA FIRST (1.4 GHz)",
         "nu": 1400,
         "rms": 0.15,
         "color": "orange",
@@ -1081,6 +1086,7 @@
     {
 	"survey": "2massh",
 	"name": "2MASS H",
+	"sv": "2MASS-H",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1103,6 +1109,7 @@
     {
 	"survey": "2massj",
 	"name": "2MASS J",
+	"sv": "2MASS-J",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1125,6 +1132,7 @@
     {
 	"survey": "2massk",
 	"name": "2MASS K",
+	"sv": "2MASS-K",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1147,6 +1155,7 @@
     {
 	"survey": "wise3_4",
 	"name": "WISE 3.4",
+	"sv": "WISE 3.4",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1169,6 +1178,7 @@
     {
 	"survey": "wise4_6",
 	"name": "WISE 4.6",
+	"sv": "WISE 4.6",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1191,6 +1201,7 @@
     {
 	"survey": "wise12",
 	"name": "WISE 12",
+	"sv": "WISE 12",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1213,6 +1224,7 @@
     {
 	"survey": "wise22",
 	"name": "WISE 22",
+	"sv": "WISE 22",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1224,6 +1236,28 @@
         "flux_mult": null,
         "pos_err": null,
 	"dec_min": -90,
+	"dec_max": 90,
+	"gal_lim": 0,
+	"local": false,
+	"patchy": false,
+	"radio": false,
+	"cutout": true,
+	"radius": 0.01
+    },
+    {
+	"survey": "decam",
+	"name": "DECam LS",
+	"cat": null,
+	"nu": null,
+        "year": null,
+	"rms": null,
+        "color": null,
+	"marker": null,
+        "flux_col": null,
+        "eflux_col": null,
+        "flux_mult": null,
+        "pos_err": null,
+	"dec_min": -30,
 	"dec_max": 90,
 	"gal_lim": 0,
 	"local": false,
@@ -1279,6 +1313,7 @@
     {
 	"survey": "dss",
 	"name": "DSS",
+	"sv": "DSS",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1301,6 +1336,7 @@
     {
 	"survey": "fermi",
 	"name": "Fermi 3-300 GeV",
+	"sv": "Fermi 5",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1323,6 +1359,7 @@
     {
 	"survey": "rass_soft",
 	"name": "RASS Soft (ROSAT)",
+	"sv": "RASS-Cnt Soft",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1345,6 +1382,7 @@
     {
 	"survey": "galex_nuv",
 	"name": "GALEX Near UV",
+	"sv": "GALEX Near UV",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1367,6 +1405,7 @@
     {
 	"survey": "swift_xrtcnt",
 	"name": "SWIFT Counts",
+	"sv": "SwiftXRTCnt",
 	"cat": null,
 	"nu": null,
         "year": null,
@@ -1389,6 +1428,7 @@
     {
 	"survey": "swift_xrtexp",
 	"cat": null,
+	"sv": "SwiftXRTExp",
 	"nu": null,
         "year": null,
 	"rms": null,
