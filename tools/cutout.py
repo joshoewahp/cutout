@@ -177,11 +177,7 @@ class Cutout:
         try:
             self.filepath = glob.glob(image_path + filepath)[0]
         except IndexError:
-            print(survey)
-            print(image_path)
-            print(filepath)
-            print('-------------')
-            raise FITSException(f'Could not match {self.survey} image filepath.')
+            raise FITSException(f'Could not match {self.survey} image filepath: \n{image_path + filepath}')
 
         with fits.open(self.filepath) as hdul:
             self.header, data = hdul[0].header, hdul[0].data

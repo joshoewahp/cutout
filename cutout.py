@@ -4,21 +4,22 @@ import sys
 import click
 import astropy.units as u
 import matplotlib.pyplot as plt
-from astropy.coordinates import SkyCoord
-from tools.cutout import Cutout, ContourCutout
-from tools.logger import Logger
-import pandas as pd
 import numpy as np
+import pandas as pd
+from astropy.coordinates import SkyCoord
+from tools.cutout import Cutout, ContourCutout, FITSException
+from tools.logger import Logger
 
 SURVEYS = pd.read_json('./config/surveys.json')
 SURVEYS.set_index('survey', inplace=True)
 
 
 @click.command()
-@click.option('-r', '--radius', default=None, help="Size of the cutout in degrees.")
+@click.option('-r', '--radius', default=None, help="Size of the cutout in degrees.", type=float)
 @click.option('-P', '--sign', is_flag=True, default=False, help="Invert polarisation sign.")
 @click.option('-c', '--contours', type=str, default=None,
               help="Survey data to use for contours.")
+@click.option('-l', '--clabels', is_flag=True, help="Display contour level labels.", default=False)
 @click.option('--pm/--no-pm', default=False,
               help="Trigger proper motion correction for nearby stars.")
 @click.option('-e', '--epoch', type=float, default=2020.0,
@@ -65,26 +66,30 @@ def main(radius, contours, clabels, pm, epoch, sign, psf, source, corner, neighb
     if not radius:
         radius = s.radius
 
-    if s.radio and not contours:
-        cutout = Cutout(survey, position, radius=radius, psf=psf, source=source, corner=corner,
-                        neighbors=neighbors, annotation=annotation, basesurvey=basesurvey,
-                        band=band, maxnorm=maxnorm, cmap=cmap, obfuscate=obfuscate,
-                        verbose=verbose, sign=psign, pm=pm, epoch=epoch)
-    elif contours:
-        cutout = ContourCutout(survey, position, radius=radius, contours=contours, psf=psf,
-                               source=source, corner=corner, neighbors=neighbors,
-                               annotation=annotation, basesurvey=basesurvey, band=band,
-                               cmap=cmap, maxnorm=maxnorm, obfuscate=obfuscate, verbose=verbose,
-                               sign=psign, pm=pm, epoch=epoch)
-    else:
-        cutout = ContourCutout(survey, position, radius=radius, contours='racsI', psf=psf,
-                               source=source, corner=corner, neighbors=neighbors,
-                               annotation=annotation, basesurvey=basesurvey, band=band,
-                               cmap=cmap, maxnorm=maxnorm, obfuscate=obfuscate, verbose=verbose,
-                               sign=psign, pm=pm, epoch=epoch)
+    try:
+        if s.radio and not contours:
+            cutout = Cutout(survey, position, radius=radius, psf=psf, source=source, corner=corner,
+                            neighbors=neighbors, annotation=annotation, basesurvey=basesurvey,
+                            band=band, maxnorm=maxnorm, cmap=cmap, obfuscate=obfuscate,
+                            verbose=verbose, sign=psign, pm=pm, epoch=epoch)
+        elif contours:
+            cutout = ContourCutout(survey, position, radius=radius, contours=contours,
+                                clabels=clabels, psf=psf, source=source, corner=corner,
+                                neighbors=neighbors, annotation=annotation,
+                                basesurvey=basesurvey, band=band, cmap=cmap, maxnorm=maxnorm,
+                                obfuscate=obfuscate, verbose=verbose, sign=psign, pm=pm,
+                                epoch=epoch)
+        else:
+            cutout = ContourCutout(survey, position, radius=radius, contours='racsI', psf=psf,
+                                source=source, corner=corner, neighbors=neighbors,
+                                annotation=annotation, basesurvey=basesurvey, band=band,
+                                cmap=cmap, maxnorm=maxnorm, obfuscate=obfuscate, verbose=verbose,
+                                sign=psign, pm=pm, epoch=epoch)
 
-    cutout.plot()
-    logger.debug(f'RMS: {np.sqrt(np.mean(np.square(cutout.data))):.2f} mJy')
+        cutout.plot()
+        logger.debug(f'RMS: {np.sqrt(np.mean(np.square(cutout.data))):.2f} mJy')
+    except FITSException as e:
+        logger.error(e)
 
     if save:
         cutout.save(save)
