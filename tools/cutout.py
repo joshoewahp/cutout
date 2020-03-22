@@ -380,8 +380,8 @@ class Cutout:
         self.ax.set_ylabel('Dec (J2000)')
 
         if self.kwargs.get('title', True):
-            self.ax.set_title(self.survey, fontdict={'fontsize': 20,
-                                                     'fontweight': 10})
+            self.ax.set_title(SURVEYS.loc[self.survey]['name'], fontdict={'fontsize': 20,
+                                                                       'fontweight': 10})
         if self.kwargs.get('obfuscate', False):
             self._obfuscate()
 
@@ -624,7 +624,7 @@ class ContourCutout(Cutout):
             self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
 
         if self.survey == 'panstarrs':
-            self.ax.set_title(f"{self.survey} ({self.band}-band)")
+            self.ax.set_title(f"{SURVEYS.loc[self.survey]['name']} ({self.band}-band)")
 
         # Plot PM corrected location
         if self.correct_pm:
