@@ -46,7 +46,7 @@ SURVEYS.set_index('survey', inplace=True)
 @click.argument('RA', type=str)
 @click.argument('Dec', type=str)
 @click.argument('Survey', type=str)
-def main(radius, contours, pm, epoch, sign, psf, source, corner, neighbors, annotation,
+def main(radius, contours, clabels, pm, epoch, sign, psf, source, corner, neighbors, annotation,
          basesurvey, cmap, maxnorm, band, obfuscate, verbose, save, savefits, ra, dec, survey):
     """Generate SED and lightcurve from radio survey data."""
 

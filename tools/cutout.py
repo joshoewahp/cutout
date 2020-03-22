@@ -530,6 +530,7 @@ class ContourCutout(Cutout):
 
     def __init__(self, survey, position, radius, **kwargs):
         self.contours = kwargs.get('contours', 'racsI')
+        self.clabels = kwargs.get('clabels', False)
         self.bar = kwargs.get('bar', False)
         self.radio = Cutout(self.contours, position, radius, **kwargs)
         try:
@@ -617,9 +618,11 @@ class ContourCutout(Cutout):
         self.radio.data *= self.kwargs.get('sign', 1)
         self.peak = self.radio.data.max()
         color = 'blue' if self.cmap == 'hot' else 'orange'
-        self.ax.contour(self.radio.data, transform=self.ax.get_transform(self.radio.wcs),
-                        levels=[self.peak * x for x in [.4, .6, .8]], colors=color,
-                        linewidths=3)
+        self.cs = self.ax.contour(self.radio.data, transform=self.ax.get_transform(self.radio.wcs),
+                                  levels=[self.peak * x for x in [.4, .6, .8]], colors=color,
+                                  linewidths=3)
+        if self.clabels:
+            self.ax.clabel(self.cs, fontsize=10, fmt='%1.1f mJy')
         if self.bar:
             self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
 
