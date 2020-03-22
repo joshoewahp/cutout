@@ -3,35 +3,36 @@
 Cutout module documentation
 """
 
-import configparser
 import io
 import os
 import re
-import glob
 import sys
+import glob
 import time
+import logging
 import requests
 import warnings
-import astropy.units as u
-import matplotlib.patheffects as pe
-import matplotlib.pyplot as plt
+import matplotlib
+import configparser
 import numpy as np
 import pandas as pd
+import astropy.units as u
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from astropy.io import fits
-from astropy.nddata import Cutout2D
 from astropy.wcs import WCS
-from astropy.coordinates import SkyCoord, Distance, Angle
-from astropy.table import Table
 from astropy.time import Time
-from astropy.visualization import ZScaleInterval, PowerDistStretch, ImageNormalize
-from astroquery.skyview import SkyView
-from astroquery.simbad import Simbad
-from matplotlib.patches import Ellipse, Rectangle
-from astropy.visualization.wcsaxes import SphericalCircle
+from astropy.table import Table
+from tools.logger import Logger
+from tools.utils import table2df
 from matplotlib.lines import Line2D
-from utils.utils import table2df
-from classes.logger import Logger
-import logging
+from astropy.nddata import Cutout2D
+from astroquery.simbad import Simbad
+from astroquery.skyview import SkyView
+from matplotlib.patches import Ellipse, Rectangle
+from astropy.coordinates import SkyCoord, Distance, Angle
+from astropy.visualization.wcsaxes import SphericalCircle
+from astropy.visualization import ZScaleInterval, PowerDistStretch, ImageNormalize
 
 from urllib.error import HTTPError
 from astropy._erfa.core import ErfaWarning
@@ -49,49 +50,9 @@ cutout_cache = config['DATA']['cutout_cache']
 
 SURVEYS = pd.read_json('./config/surveys.json')
 SURVEYS.set_index('survey', inplace=True)
-
-# METADATA
-# -------------------------------------------------
-sv_surveys = {
-    '2massh': '2MASS-H',
-    '2massj': '2MASS-J',
-    '2massk': '2MASS-K',
-    'dss': 'DSS',
-    'fermi': 'Fermi 5',
-    'galex_nuv': 'GALEX Near UV',
-    'gb6': 'GB6 (4850MHz)',
-    'gleam': 'GLEAM 139-170 MHz',
-    'nvss': 'NVSS',
-    'rass_soft': 'RASS-Cnt Soft',
-    'rass_hard': 'RASS-Cnt Hard',
-    'rass_broad': 'RASS-Cnt Broad',
-    'rass0_6': 'PSPC 0.6 Deg-Int',
-    'rass1': 'PSPC 1.0 Deg-Int',
-    'rass2': 'PSPC 2.0 Deg-Int',
-    'sumss': 'SUMSS 843 MHz',
-    'swiftbat': 'BAT SNR 14-20',
-    'swift_xrtcnt': 'SwiftXRTCnt',
-    'swift_xrtexp': 'SwiftXRTExp',
-    'tgss': 'TGSS ADR1',
-    'vla_first': 'VLA FIRST (1.4 GHz)',
-    'wise3_4': 'WISE 3.4',
-    'wise4_6': 'WISE 4.6',
-    'wise12': 'WISE 12',
-    'wise22': 'WISE 22',
-}
-
-# -------------------------------------------------
-
 Simbad.add_votable_fields('otype', 'ra(d)', 'dec(d)', 'parallax',
                           'pmdec', 'pmra', 'distance',
                           'sptype', 'distance_result')
-
-# Skymapper API Links
-# -------------------------------------------------
-linka = 'http://api.skymapper.nci.org.au/aus/siap/dr2/'
-linkb = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=CSV'
-linkc = '&VERB=3&INTERSECT=covers'
-sm_query = linka + linkb + linkc
 
 
 class FITSException(Exception):
@@ -110,15 +71,19 @@ class Cutout:
         self.psf = kwargs.get('psf')
         self.cmap = kwargs.get('cmap', 'gray_r')
         self.color = 'k' if self.cmap == 'hot' else 'black'
-        self.logger = kwargs.get('logger', Logger(__name__).logger)
+        self.band = kwargs.get('band', 'g')
 
-        if kwargs.get('verbose'):
-            self.logger.setLevel(logging.DEBUG)
-
+        level = 'DEBUG' if kwargs.get('verbose') else 'INFO'
+        self.logger = Logger(__name__, kwargs.get('log'), streamlevel=level).logger
+        self.logger.propagate = False
+        
         self.kwargs = kwargs
 
         try:
             self._get_cutout()
+            if kwargs.get('clipped') and np.isnan(self.data.max()):
+                self.logger.warning('Setting clipped values to max, check output.')
+                self.data = np.nan_to_num(self.data, nan=np.nanmax(self.data))
         except Exception as e:
             msg = f"{survey} failed: {e}"
             raise FITSException(msg)
@@ -129,7 +94,7 @@ class Cutout:
 
     def __repr__(self):
         return f"Cutout({self.survey}, ra={self.ra:.2f}, dec={self.dec:.2f})"
-
+    
     def _get_source(self):
         try:
             pattern = re.compile(r'\S*(\d{4}[+-]\d{2}[AB])\S*')
@@ -156,6 +121,12 @@ class Cutout:
                 self.neighbors = sources
                 self.plot_sources = False
             self.plot_neighbors = True
+
+            self.logger.info(f'Source: \n {self.source}')
+            if len(self.neighbors) > 0:
+                self.logger.info(f'Neerest Neighbor \n {self.neighbors.iloc[0]}')
+            self.logger.info(f'Neighbors: \n {self.neighbors}')
+
         except IndexError:
             self.plot_sources = False
             self.plot_neighbors = False
@@ -168,14 +139,18 @@ class Cutout:
             self.logger.info(msg)
             os.makedirs(cutout_cache + self.survey)
 
-        if self.survey == 'skymapper':
+        if os.path.isfile(self.survey):
+            self._get_local_cutout()
+        elif 'racs' in self.survey or 'vast' in self.survey:
+            self._get_local_cutout()
+        elif self.survey == 'skymapper':
             self._get_skymapper_cutout()
         elif self.survey == 'panstarrs':
             self._get_panstarrs_cutout()
-        elif self.survey in sv_surveys.keys():
-            self._get_skyview_cutout()
+        elif self.survey == 'decam':
+            self._get_decam_cutout()
         else:
-            self._get_local_cutout()
+            self._get_skyview_cutout()
 
     def _get_local_cutout(self):
         """Fetch cutout data via local FITS images (e.g. RACS / VLASS)."""
@@ -193,10 +168,7 @@ class Cutout:
             filepath = f'RACS_test4_1.05_{closest.field}.fits'
             pol = self.survey[-1]
         elif 'vast' in self.survey:
-            if 'x' in self.survey:
-                epoch = self.survey[-3:-1]
-            else:
-                epoch = self.survey[-2]
+            epoch = self.survey[-2]
             pol = self.survey[-1]
             filepath = f'VAST_{closest.field}.EPOCH0{epoch}.{pol}.fits'
         else:
@@ -232,15 +204,13 @@ class Cutout:
             self.plot_neighbors = False
 
     def _get_panstarrs_cutout(self):
-        """Fetch cutout data via HTML request (e.g. PanSTARRS)"""
-        band = self.kwargs.get('band', 'g')
-        path = cutout_cache + 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(band,
+        """Fetch cutout data via PanSTARRS DR2 API."""
+        path = cutout_cache + 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(self.band,
                                                                         '{:.3f}',
                                                                         '{:.3f}',
                                                                         '{:.3f}',)
 
         if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
-
             pixelrad = int(self.radius * 120 * 120)
             service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
             url = (f"{service}?ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits"
@@ -276,9 +246,14 @@ class Cutout:
             self.wcs = WCS(self.header, naxis=2)
 
     def _get_skymapper_cutout(self):
-        """Fetch cutout data via HTML request (e.g. Skymapper)."""
+        """Fetch cutout data via Skymapper API."""
 
         path = cutout_cache + self.survey + '/dr2_jd{:.3f}_{:.3f}arcmin_{:.3f}_{:.3f}'
+        linka = 'http://api.skymapper.nci.org.au/aus/siap/dr2/'
+        linkb = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=CSV'
+        linkc = '&VERB=3&INTERSECT=covers'
+        sm_query = linka + linkb + linkc
+        
         link = linka + 'get_image?IMAGE={}&SIZE={}&POS={},{}&FORMAT=fits'
 
         table = requests.get(sm_query.format(self.ra, self.dec, self.radius))
@@ -298,6 +273,30 @@ class Cutout:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
+    def _get_decam_cutout(self):
+        """Fetch cutout data via DECam LS API."""
+        size = int(self.radius * 3600 / 0.262)
+        if size > 512:
+            size = 512
+            maxradius = size * 0.262 / 3600 
+            self.logger.warning(f"Using maximum DECam LS cutout radius of {maxradius:.3f} deg")
+            
+        path = cutout_cache + self.survey + '/dr8_jd{:.3f}_{:.3f}arcmin_{:.3f}_{:.3f}_{}band'
+        link = f"http://legacysurvey.org/viewer/fits-cutout?ra={self.ra}&dec={self.dec}&size={size}&layer=dr8&pixscale=0.262&bands={self.band}"
+
+        img = requests.get(link)
+
+        if not os.path.exists(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)):
+            with open(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band), 'wb') as f:
+                f.write(img.content)
+        
+        with fits.open(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)) as hdul:
+            self.header, self.data = hdul[0].header, hdul[0].data
+            self.wcs = WCS(self.header, naxis=2)
+
+        assert self.data is not None, f"No DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+
+        
     def _get_skyview_cutout(self):
         """Fetch cutout data via SkyView API."""
 
@@ -306,13 +305,16 @@ class Cutout:
         progress = self.kwargs.get('progress', False)
 
         if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
+            skyview_key = SURVEYS.loc[self.survey].sv
             try:
-                hdul = sv.get_images(position=self.position, survey=[sv_surveys[self.survey]],
+                hdul = sv.get_images(position=self.position, survey=[skyview_key],
                                      radius=self.radius * u.deg, show_progress=progress)[0][0]
             except IndexError:
-                raise FITSException('Skyview image list returned empty')
+                raise FITSException('Skyview image list returned empty.')
+            except ValueError:
+                raise FITSException(f'{self.survey} is not a valid SkyView survey.')
             except HTTPError:
-                raise FITSException('No response from Skyview server')
+                raise FITSException('No response from Skyview server.')
 
             with open(path.format(self.radius * 60, self.ra, self.dec), 'wb') as f:
                 hdul.writeto(f)
@@ -320,13 +322,14 @@ class Cutout:
         with fits.open(path.format(self.radius * 60, self.ra, self.dec)) as hdul:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
+
             try:
                 self.mjd = Time(self.header['DATE']).mjd
             except KeyError:
                 try:
-                    epoch = self.kwargs.get('epoch')
+                    self.epoch = self.kwargs.get('epoch')
                     msg = "Could not detect epoch, PM correction disabled."
-                    assert epoch is not None, msg
+                    assert self.epoch is not None, msg
                     self.mjd = epoch if epoch > 3000 else Time(epoch, format='decimalyear').mjd
                 except AssertionError as e:
                     if self.kwargs.get('pm'):
@@ -339,7 +342,11 @@ class Cutout:
         """Return DataFrame of survey fields containing coord."""
 
         survey = self.survey[:-1]
-        image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
+        try:
+            image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
+        except FileNotFoundError:
+            raise FITSException(f"Missing field metadata csv for {survey}.")
+        
         beam_centre = SkyCoord(ra=image_df['cr_ra_pix'], dec=image_df['cr_dec_pix'],
                                unit=u.deg)
         image_df['dist_field_centre'] = beam_centre.separation(self.position).deg
@@ -412,19 +419,15 @@ class Cutout:
 
         if self.kwargs.get('maxnorm'):
             self.norm = ImageNormalize(self.data, interval=ZScaleInterval(),
-                                       vmax=self.data.max())
+                                       vmax=self.data.max(), clip=True)
         else:
-            self.norm = ImageNormalize(self.data, interval=ZScaleInterval(contrast=0.2))
+            self.norm = ImageNormalize(self.data, interval=ZScaleInterval(contrast=0.2),
+                                       clip=True)
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
         if self.kwargs.get('bar', True):
-            try:
-                self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
-            except UnboundLocalError as e:
-                self.logger.warning(e)  # Matplotlib error, need to investigate
-                self.logger.warning("Disabling colorbar")
-                pass
+            self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
 
         if self.psf:
             try:
@@ -516,6 +519,15 @@ class Cutout:
         """Save figure with tight bounding box."""
         self.fig.savefig(path, format=fmt, bbox_inches='tight')
 
+    def savefits(self, path):
+        """Export FITS cutout to path"""
+        header = self.wcs.to_header()
+        header['BPA'] = self.header['BPA']
+        header['BMIN'] = self.header['BMIN']
+        header['BMAJ'] = self.header['BMAJ']
+        hdu = fits.PrimaryHDU(data=self.data, header=header)
+        hdu.writeto(path)
+
 
 class ContourCutout(Cutout):
 
@@ -538,13 +550,20 @@ class ContourCutout(Cutout):
         """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates"""
 
         simbad = Simbad.query_region(self.position, radius=180 * u.arcsec)
-
-        epoch = self.kwargs.get('epoch', 2019.609728489631)
-        self.mjd = epoch if epoch > 3000 else Time(epoch, format='decimalyear').mjd
-
+        self.epoch = self.kwargs.get('epoch', 2019.609728489631)
+        self.epochtype = 'MJD' if self.epoch > 3e3 else 'decimalyear'
+        self.mjd = Time(self.epoch, format=self.epochtype.lower()).mjd
+        
         if simbad is not None:
-
             simbad = table2df(simbad)
+            simbad = simbad[(simbad['OTYPE'].isin(['*', '**', 'PM*', 'Star', 'PSR', 'Pulsar', 'Flare*'])) |
+                            (simbad['SP_TYPE'].str.len() > 0)]
+
+            if len(simbad) == 0:
+                self.logger.warning("No high proper-motion objects within 180 arcsec.")
+                self.correct_pm = False
+                return
+
             dist = Distance(parallax=simbad['PLX_VALUE'].values * u.mas)
             simbad['oldpos'] = SkyCoord(
                 ra=simbad['RA_d'].values * u.deg,
@@ -560,20 +579,26 @@ class ContourCutout(Cutout):
             simbad['PM Corrected Separation (arcsec)'] = np.round(newpos.apply(
                 lambda x: x.separation(self.position).arcsec), 3)
 
-            simbad = simbad[['MAIN_ID', 'OTYPE', 'SP_TYPE',
+            simbad = simbad[['MAIN_ID', 'OTYPE', 'SP_TYPE', 'DISTANCE_RESULT',
                              'PM Corrected Separation (arcsec)']].copy()
             simbad = simbad.rename(columns={'MAIN_ID': 'Object', 'OTYPE': 'Type',
+                                            'DISTANCE_RESULT': 'Separation (arcsec)',
                                             'SP_TYPE': 'Spectral Type'})
-            simbad = simbad[(simbad.Type.isin(['*', '**', 'PM*', 'Star', 'PSR', 'Flare*'])) |
-                            (simbad['Spectral Type'].str.len() > 0)]
-            self.logger.debug(simbad)
+            self.logger.debug(f'SIMBAD results:\n {simbad}')
             self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)').head()
-            self.pm_coord = newpos[self.simbad['PM Corrected Separation (arcsec)'].idxmin()]
-            msg = f'Proper motion corrected to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
+            nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
+            self.pm_coord = newpos[nearest]
+            object = self.simbad.loc[nearest].Object
+            msg = f'Proper motion corrected {object} to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
             self.logger.debug(msg)
-
+            missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
             if self.simbad['PM Corrected Separation (arcsec)'].min() > 15:
+                self.logger.warning("No PM corrected objects within 15 arcsec")
                 self.correct_pm = False
+            if len(missing) > 0:
+                msg = f"Some objects missing PM data, and may be closer matches \n {missing}"
+                self.logger.warning(msg)
+
         else:
             self.correct_pm = False
 
@@ -583,7 +608,8 @@ class ContourCutout(Cutout):
         assert (sum((~np.isnan(self.data).flatten())) > 0 and sum(self.data.flatten()) != 0), \
             f"No data in {self.survey}"
 
-        self.norm = ImageNormalize(self.data, interval=ZScaleInterval(contrast=0.2))
+        self.norm = ImageNormalize(self.data, interval=ZScaleInterval(contrast=0.2),
+                                   clip=True)
 
         if self.survey == 'swift_xrtcnt':
             self.im = self.ax.imshow(self.data, cmap=self.cmap)
@@ -601,85 +627,13 @@ class ContourCutout(Cutout):
             self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
 
         if self.survey == 'panstarrs':
-            band = self.kwargs.get('band', 'g')
-            self.ax.set_title(f"{self.survey} ({band}-band)")
+            self.ax.set_title(f"{self.survey} ({self.band}-band)")
 
         # Plot PM corrected location
         if self.correct_pm:
             name = self.simbad.iloc[0]["Object"]
             self.ax.scatter(self.pm_coord.ra, self.pm_coord.dec, marker='x', s=200, color='r',
                             transform=self.ax.get_transform('world'),
-                            label=f'{name} position at RACS epoch')
+                            label=f'{name} position at {self.epochtype} {self.epoch} ')
             self.ax.legend()
 
-
-if __name__ == '__main__':
-
-    # Search with CSV input of sources
-    if len(sys.argv) == 2 and 'csv' in sys.argv[1]:
-        coords = pd.read_csv(sys.argv[1])
-
-        for survey in ['vastp1I', 'vastp1V', 'vastp2I', 'vastp2V']:
-            fluxes = pd.read_csv(aux_path + f'{survey}-mm_raw_selavy_cat.csv')
-
-            # # Get Fluxes
-            position = SkyCoord(ra=coords.RA, dec=coords.Dec, unit=u.deg)
-            fluxpos = SkyCoord(ra=fluxes.ra_deg_cont, dec=fluxes.dec_deg_cont, unit=u.deg)
-
-            idx, d2d, _ = position.match_to_catalog_sky(fluxpos)
-            coords['d2d'] = d2d
-            coords['match'] = idx
-            coords = coords.merge(fluxes, left_on='match', right_index=True, how='inner')
-
-            # # Make cutouts
-            # for idx, coord in coords.iterrows():
-
-            #     try:
-            # sign = coord.Sign if 'V' in survey else 1
-            #         position = SkyCoord(ra=coord.RA, dec=coord.Dec, unit=u.deg)
-            #         cutout = Cutout(survey, position, radius=1/30, sign=sign)
-            #         cutout.plot()
-
-            #     except FITSException:
-            #         pass
-
-    # Search with coordinates
-    else:
-        if len(sys.argv) == 4:
-            survey = sys.argv[3]
-        elif len(sys.argv) == 3:
-            survey = 'racsI'
-        else:
-            print("Usage: {} <RA> <Dec>".format(sys.argv[0]))
-            exit()
-
-        ra = sys.argv[1]
-        dec = sys.argv[2]
-
-        if ':' in ra:
-            unit = u.hourangle
-        else:
-            unit = u.deg
-
-        sign = -1 if survey[-1] == 'V' else 1
-
-        position = SkyCoord(ra=ra, dec=dec, unit=(unit, u.deg))
-
-        if len(sys.argv) == 3:
-            cutout = Cutout(survey, position, radius=1 / 20, sign=sign, source=True, psf=True)
-        else:
-            cutout = ContourCutout(survey, position, radius=1 / 4, sign=sign, source=True)
-
-        # cutout = ContourCutout(survey, position, radius=1 / 70, sign=sign, obfuscate=True,
-        #                        contours='racsV', pm=True)
-        cutout.plot()
-
-        try:
-            print(cutout.source)
-            # print(cutout.neighbors.sort_values('d2d'))
-        except Exception:
-            pass
-        # cutout.ax.set_title('')
-        # cutout.save(f'mystery_{survey}.png')
-
-    plt.show()
