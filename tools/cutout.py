@@ -72,11 +72,11 @@ class Cutout:
         self.cmap = kwargs.get('cmap', 'gray_r')
         self.color = 'k' if self.cmap == 'hot' else 'black'
         self.band = kwargs.get('band', 'g')
-        self.logger = Logger(__name__, kwargs.get('log')).logger
 
-        if kwargs.get('verbose'):
-            self.logger.setLevel(logging.DEBUG)
-
+        level = 'DEBUG' if kwargs.get('verbose') else 'INFO'
+        self.logger = Logger(__name__, kwargs.get('log'), streamlevel=level).logger
+        self.logger.propagate = False
+        
         self.kwargs = kwargs
 
         try:
@@ -322,9 +322,9 @@ class Cutout:
                 self.mjd = Time(self.header['DATE']).mjd
             except KeyError:
                 try:
-                    epoch = self.kwargs.get('epoch')
+                    self.epoch = self.kwargs.get('epoch')
                     msg = "Could not detect epoch, PM correction disabled."
-                    assert epoch is not None, msg
+                    assert self.epoch is not None, msg
                     self.mjd = epoch if epoch > 3000 else Time(epoch, format='decimalyear').mjd
                 except AssertionError as e:
                     if self.kwargs.get('pm'):
@@ -541,13 +541,20 @@ class ContourCutout(Cutout):
         """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates"""
 
         simbad = Simbad.query_region(self.position, radius=180 * u.arcsec)
-
-        epoch = self.kwargs.get('epoch', 2019.609728489631)
-        self.mjd = epoch if epoch > 3000 else Time(epoch, format='decimalyear').mjd
-
+        self.epoch = self.kwargs.get('epoch', 2019.609728489631)
+        self.epochtype = 'MJD' if self.epoch > 3e3 else 'decimalyear'
+        self.mjd = Time(self.epoch, format=self.epochtype.lower()).mjd
+        
         if simbad is not None:
-
             simbad = table2df(simbad)
+            simbad = simbad[(simbad['OTYPE'].isin(['*', '**', 'PM*', 'Star', 'PSR', 'Pulsar', 'Flare*'])) |
+                            (simbad['SP_TYPE'].str.len() > 0)]
+
+            if len(simbad) == 0:
+                self.logger.warning("No high proper-motion objects within 180 arcsec.")
+                self.correct_pm = False
+                return
+
             dist = Distance(parallax=simbad['PLX_VALUE'].values * u.mas)
             simbad['oldpos'] = SkyCoord(
                 ra=simbad['RA_d'].values * u.deg,
@@ -563,20 +570,26 @@ class ContourCutout(Cutout):
             simbad['PM Corrected Separation (arcsec)'] = np.round(newpos.apply(
                 lambda x: x.separation(self.position).arcsec), 3)
 
-            simbad = simbad[['MAIN_ID', 'OTYPE', 'SP_TYPE',
+            simbad = simbad[['MAIN_ID', 'OTYPE', 'SP_TYPE', 'DISTANCE_RESULT',
                              'PM Corrected Separation (arcsec)']].copy()
             simbad = simbad.rename(columns={'MAIN_ID': 'Object', 'OTYPE': 'Type',
+                                            'DISTANCE_RESULT': 'Separation (arcsec)',
                                             'SP_TYPE': 'Spectral Type'})
-            simbad = simbad[(simbad.Type.isin(['*', '**', 'PM*', 'Star', 'PSR', 'Flare*'])) |
-                            (simbad['Spectral Type'].str.len() > 0)]
-            self.logger.debug(simbad)
+            self.logger.debug(f'SIMBAD results:\n {simbad}')
             self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)').head()
-            self.pm_coord = newpos[self.simbad['PM Corrected Separation (arcsec)'].idxmin()]
-            msg = f'Proper motion corrected to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
+            nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
+            self.pm_coord = newpos[nearest]
+            object = self.simbad.loc[nearest].Object
+            msg = f'Proper motion corrected {object} to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
             self.logger.debug(msg)
-
+            missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
             if self.simbad['PM Corrected Separation (arcsec)'].min() > 15:
+                self.logger.warning("No PM corrected objects within 15 arcsec")
                 self.correct_pm = False
+            if len(missing) > 0:
+                msg = f"Some objects missing PM data, and may be closer matches \n {missing}"
+                self.logger.warning(msg)
+
         else:
             self.correct_pm = False
 
@@ -612,6 +625,6 @@ class ContourCutout(Cutout):
             name = self.simbad.iloc[0]["Object"]
             self.ax.scatter(self.pm_coord.ra, self.pm_coord.dec, marker='x', s=200, color='r',
                             transform=self.ax.get_transform('world'),
-                            label=f'{name} position at RACS epoch')
+                            label=f'{name} position at {self.epochtype} {self.epoch} ')
             self.ax.legend()
 
