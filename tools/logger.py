@@ -22,10 +22,12 @@ class Logger:
         self.level = levels[kwargs.get('level', 'DEBUG')]
         self.stream = kwargs.get('stream')
         self.streamlevel = levels[kwargs.get('streamlevel', 'INFO')]
+        self.logger = logging.getLogger(self.name)
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
         self._setup()
 
     def _setup(self):
-        self.logger = logging.getLogger(self.name)
         self.logger.setLevel(self.level)
         self.formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                                            datefmt='%Y-%m-%d %H:%M:%S')
