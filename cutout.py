@@ -15,7 +15,7 @@ SURVEYS.set_index('survey', inplace=True)
 
 
 @click.command()
-@click.option('-r', '--radius', default=1 / 40, help="Size of the cutout in degrees.")
+@click.option('-r', '--radius', default=None, help="Size of the cutout in degrees.")
 @click.option('-P', '--sign', is_flag=True, default=False, help="Invert polarisation sign.")
 @click.option('-c', '--contours', type=str, default=None,
               help="Survey data to use for contours.")
@@ -52,7 +52,7 @@ def main(radius, contours, pm, epoch, sign, psf, source, corner, neighbors, anno
 
     level = 'DEBUG' if verbose else 'INFO'
     logger = Logger(__name__, streamlevel=level).logger
-
+    
     if ':' in ra:
         unit = u.hourangle
     else:
@@ -62,6 +62,8 @@ def main(radius, contours, pm, epoch, sign, psf, source, corner, neighbors, anno
     psign = -1 if sign else 1
 
     s = SURVEYS.loc[survey]
+    if not radius:
+        radius = s.radius
 
     if s.radio and not contours:
         cutout = Cutout(survey, position, radius=radius, psf=psf, source=source, corner=corner,
