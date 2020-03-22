@@ -522,9 +522,6 @@ class Cutout:
     def savefits(self, path):
         """Export FITS cutout to path"""
         header = self.wcs.to_header()
-        header['BPA'] = self.header['BPA']
-        header['BMIN'] = self.header['BMIN']
-        header['BMAJ'] = self.header['BMAJ']
         hdu = fits.PrimaryHDU(data=self.data, header=header)
         hdu.writeto(path)
 
