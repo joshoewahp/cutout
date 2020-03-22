@@ -204,7 +204,7 @@ class Cutout:
             self.plot_neighbors = False
 
     def _get_panstarrs_cutout(self):
-        """Fetch cutout data via HTML request (e.g. PanSTARRS)"""
+        """Fetch cutout data via PanSTARRS DR2 API."""
         path = cutout_cache + 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(self.band,
                                                                         '{:.3f}',
                                                                         '{:.3f}',
@@ -246,7 +246,7 @@ class Cutout:
             self.wcs = WCS(self.header, naxis=2)
 
     def _get_skymapper_cutout(self):
-        """Fetch cutout data via HTML request (e.g. Skymapper)."""
+        """Fetch cutout data via Skymapper API."""
 
         path = cutout_cache + self.survey + '/dr2_jd{:.3f}_{:.3f}arcmin_{:.3f}_{:.3f}'
         linka = 'http://api.skymapper.nci.org.au/aus/siap/dr2/'
@@ -274,7 +274,7 @@ class Cutout:
             self.wcs = WCS(self.header, naxis=2)
 
     def _get_decam_cutout(self):
-
+        """Fetch cutout data via DECam LS API."""
         size = int(self.radius * 3600 / 0.262)
         if size > 512:
             size = 512
@@ -294,6 +294,8 @@ class Cutout:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
+        assert self.data is not None, f"No DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+
         
     def _get_skyview_cutout(self):
         """Fetch cutout data via SkyView API."""
@@ -303,13 +305,16 @@ class Cutout:
         progress = self.kwargs.get('progress', False)
 
         if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
+            skyview_key = SURVEYS.loc[self.survey].sv
             try:
-                hdul = sv.get_images(position=self.position, survey=[sv_surveys[self.survey]],
+                hdul = sv.get_images(position=self.position, survey=[skyview_key],
                                      radius=self.radius * u.deg, show_progress=progress)[0][0]
             except IndexError:
-                raise FITSException('Skyview image list returned empty')
+                raise FITSException('Skyview image list returned empty.')
+            except ValueError:
+                raise FITSException(f'{self.survey} is not a valid SkyView survey.')
             except HTTPError:
-                raise FITSException('No response from Skyview server')
+                raise FITSException('No response from Skyview server.')
 
             with open(path.format(self.radius * 60, self.ra, self.dec), 'wb') as f:
                 hdul.writeto(f)
@@ -337,7 +342,11 @@ class Cutout:
         """Return DataFrame of survey fields containing coord."""
 
         survey = self.survey[:-1]
-        image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
+        try:
+            image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
+        except FileNotFoundError:
+            raise FITSException(f"Missing field metadata csv for {survey}.")
+        
         beam_centre = SkyCoord(ra=image_df['cr_ra_pix'], dec=image_df['cr_dec_pix'],
                                unit=u.deg)
         image_df['dist_field_centre'] = beam_centre.separation(self.position).deg
