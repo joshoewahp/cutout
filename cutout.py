@@ -1,4 +1,4 @@
-#!/suphys/jpri6587/bin/miniconda3/bin/python
+#!/usr/bin/env python
 
 import sys
 import click

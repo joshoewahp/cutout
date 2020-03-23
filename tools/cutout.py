@@ -1,4 +1,4 @@
-#!/suphys/jpri6587/bin/miniconda3/bin/python
+#!/usr/bin/env python
 """
 Cutout module documentation
 """
@@ -301,9 +301,10 @@ class Cutout:
 
         sv = SkyView()
         path = cutout_cache + self.survey + '/{:.3f}arcmin_{:.3f}_{:.3f}.fits'
+        path = path.format(self.radius * 60, self.ra, self.dec)
         progress = self.kwargs.get('progress', False)
 
-        if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
+        if not os.path.exists(path):
             skyview_key = SURVEYS.loc[self.survey].sv
             try:
                 hdul = sv.get_images(position=self.position, survey=[skyview_key],
@@ -315,10 +316,10 @@ class Cutout:
             except HTTPError:
                 raise FITSException('No response from Skyview server.')
 
-            with open(path.format(self.radius * 60, self.ra, self.dec), 'wb') as f:
+            with open(path, 'wb') as f:
                 hdul.writeto(f)
 
-        with fits.open(path.format(self.radius * 60, self.ra, self.dec)) as hdul:
+        with fits.open(path) as hdul:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
