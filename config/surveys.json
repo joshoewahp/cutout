@@ -668,8 +668,8 @@
 	"radius": 0.025
     },
     {
-	"survey": "vlassI",
-	"name": "VLASS (I)",
+	"survey": "vlass",
+	"name": "VLASS",
 	"cat": null,
 	"nu": 2100,
 	"rms": 0.12,

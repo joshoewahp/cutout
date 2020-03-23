@@ -76,25 +76,22 @@ class Cutout:
         level = 'DEBUG' if kwargs.get('verbose') else 'INFO'
         self.logger = Logger(__name__, kwargs.get('log'), streamlevel=level).logger
         self.logger.propagate = False
-        
+
         self.kwargs = kwargs
 
         try:
             self._get_cutout()
-            if kwargs.get('clipped') and np.isnan(self.data.max()):
-                self.logger.warning('Setting clipped values to max, check output.')
-                self.data = np.nan_to_num(self.data, nan=np.nanmax(self.data))
         except Exception as e:
             msg = f"{survey} failed: {e}"
             raise FITSException(msg)
         finally:
             if 'racs' not in self.survey and 'vast' not in self.survey:
                 self.plot_sources = False
-                self.plot_neighbors = False
+                self.plot_neighbours = False
 
     def __repr__(self):
         return f"Cutout({self.survey}, ra={self.ra:.2f}, dec={self.dec:.2f})"
-    
+
     def _get_source(self):
         try:
             pattern = re.compile(r'\S*(\d{4}[+-]\d{2}[AB])\S*')
@@ -114,22 +111,22 @@ class Cutout:
 
             if any(sources.d2d < self.pos_err / 3600):
                 self.source = sources.iloc[0]
-                self.neighbors = sources.iloc[1:]
+                self.neighbours = sources.iloc[1:]
                 self.plot_sources = True
             else:
                 self.source = None
-                self.neighbors = sources
+                self.neighbours = sources
                 self.plot_sources = False
-            self.plot_neighbors = True
 
-            self.logger.info(f'Source: \n {self.source}')
-            if len(self.neighbors) > 0:
-                self.logger.info(f'Neerest Neighbor \n {self.neighbors.iloc[0]}')
-            self.logger.info(f'Neighbors: \n {self.neighbors}')
+            self.plot_neighbours = self.kwargs.get('neighbours', True)
+
+            self.logger.debug(f'Source: \n {self.source}')
+            if len(self.neighbours) > 0:
+                self.logger.debug(f'Nearest 5 Neighbours \n {self.neighbours.head()}')
 
         except IndexError:
             self.plot_sources = False
-            self.plot_neighbors = False
+            self.plot_neighbours = False
             self.logger.warning('No nearby sources found.')
 
     def _get_cutout(self):
@@ -141,7 +138,7 @@ class Cutout:
 
         if os.path.isfile(self.survey):
             self._get_local_cutout()
-        elif 'racs' in self.survey or 'vast' in self.survey:
+        elif 'racs' in self.survey or 'vast' in self.survey or 'vlass' in self.survey:
             self._get_local_cutout()
         elif self.survey == 'skymapper':
             self._get_skymapper_cutout()
@@ -161,7 +158,7 @@ class Cutout:
         closest = fields[fields.dist_field_centre == fields.dist_field_centre.min()].iloc[0]
         image_path = SURVEYS.loc[self.survey]['images']
 
-        if self.survey == 'vlassI':
+        if self.survey == 'vlass':
             filepath = f'{closest.epoch}/{closest.tile}/{closest.image}/{closest.filename}'
             image_path = vlass_path
         elif 'racs' in self.survey:
@@ -177,7 +174,8 @@ class Cutout:
         try:
             self.filepath = glob.glob(image_path + filepath)[0]
         except IndexError:
-            raise FITSException(f'Could not match {self.survey} image filepath: \n{image_path + filepath}')
+            raise FITSException(
+                f'Could not match {self.survey} image filepath: \n{image_path + filepath}')
 
         with fits.open(self.filepath) as hdul:
             self.header, data = hdul[0].header, hdul[0].data
@@ -191,13 +189,13 @@ class Cutout:
             self.data = cutout.data * 1000
             self.wcs = cutout.wcs
 
-        if self.kwargs.get('source') and 'racs' in self.survey:
+        if 'racs' in self.survey or 'vast' in self.survey:
             self.pos_err = SURVEYS.loc[self.basesurvey].pos_err
             self._get_source()
         else:
             # Probably using vlass, yet to include aegean catalogs
             self.plot_sources = False
-            self.plot_neighbors = False
+            self.plot_neighbours = False
 
     def _get_panstarrs_cutout(self):
         """Fetch cutout data via PanSTARRS DR2 API."""
@@ -205,16 +203,16 @@ class Cutout:
                                                                         '{:.3f}',
                                                                         '{:.3f}',
                                                                         '{:.3f}',)
-
-        if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
+        imgpath = path.format(self.radius * 60, self.ra, self.dec)
+        if not os.path.exists(imgpath):
             pixelrad = int(self.radius * 120 * 120)
             service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
             url = (f"{service}?ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits"
                    f"&filters=grizy")
             table = Table.read(url, format='ascii')
 
-            assert len(
-                table) > 0, f"No PS1 image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+            msg = f"No PS1 image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+            assert len(table) > 0, msg
 
             urlbase = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
                        f"ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits&red=")
@@ -223,21 +221,22 @@ class Cutout:
             table = table[np.argsort(flist)]
 
             for row in table:
+                self.mjd = row['mjd']
                 filt = row['filter']
                 url = urlbase + row['filename']
                 path = cutout_cache + 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(filt,
                                                                                 '{:.3f}',
                                                                                 '{:.3f}',
                                                                                 '{:.3f}',)
+                path = path.format(self.radius * 60, self.ra, self.dec)
 
-                self.mjd = row['mjd']
                 img = requests.get(url, allow_redirects=True)
 
-                if not os.path.exists(path.format(self.radius * 60, self.ra, self.dec)):
-                    with open(path.format(self.radius * 60, self.ra, self.dec), 'wb') as f:
+                if not os.path.exists(path):
+                    with open(path, 'wb') as f:
                         f.write(img.content)
 
-        with fits.open(path.format(self.radius * 60, self.ra, self.dec)) as hdul:
+        with fits.open(imgpath) as hdul:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
@@ -249,7 +248,7 @@ class Cutout:
         linkb = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=CSV'
         linkc = '&VERB=3&INTERSECT=covers'
         sm_query = linka + linkb + linkc
-        
+
         link = linka + 'get_image?IMAGE={}&SIZE={}&POS={},{}&FORMAT=fits'
 
         table = requests.get(sm_query.format(self.ra, self.dec, self.radius))
@@ -261,11 +260,14 @@ class Cutout:
         link = df.iloc[0].get_image
 
         img = requests.get(link)
-        if not os.path.exists(path.format(self.mjd, self.radius * 60, self.ra, self.dec)):
-            with open(path.format(self.mjd, self.radius * 60, self.ra, self.dec), 'wb') as f:
+
+        path = path.format(self.mjd, self.radius * 60, self.ra, self.dec)
+
+        if not os.path.exists(path):
+            with open(path, 'wb') as f:
                 f.write(img.content)
 
-        with fits.open(path.format(self.mjd, self.radius * 60, self.ra, self.dec)) as hdul:
+        with fits.open(path) as hdul:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
@@ -274,25 +276,26 @@ class Cutout:
         size = int(self.radius * 3600 / 0.262)
         if size > 512:
             size = 512
-            maxradius = size * 0.262 / 3600 
+            maxradius = size * 0.262 / 3600
             self.logger.warning(f"Using maximum DECam LS cutout radius of {maxradius:.3f} deg")
-            
-        path = cutout_cache + self.survey + '/dr8_jd{:.3f}_{:.3f}arcmin_{:.3f}_{:.3f}_{}band'
-        link = f"http://legacysurvey.org/viewer/fits-cutout?ra={self.ra}&dec={self.dec}&size={size}&layer=dr8&pixscale=0.262&bands={self.band}"
 
+        link = f"http://legacysurvey.org/viewer/fits-cutout?ra={self.ra}&dec={self.dec}"
+        link += f"&size={size}&layer=dr8&pixscale=0.262&bands={self.band}"
         img = requests.get(link)
 
-        if not os.path.exists(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)):
-            with open(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band), 'wb') as f:
+        path = cutout_cache + self.survey + '/dr8_jd{:.3f}_{:.3f}arcmin_{:.3f}_{:.3f}_{}band'
+        path = path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)
+        if not os.path.exists(path):
+            with open(path, 'wb') as f:
                 f.write(img.content)
-        
-        with fits.open(path.format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)) as hdul:
+
+        with fits.open(path) as hdul:
             self.header, self.data = hdul[0].header, hdul[0].data
             self.wcs = WCS(self.header, naxis=2)
 
-        assert self.data is not None, f"No DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+        msg = f"No DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f}"
+        assert self.data is not None, msg
 
-        
     def _get_skyview_cutout(self):
         """Fetch cutout data via SkyView API."""
 
@@ -326,7 +329,8 @@ class Cutout:
                     self.epoch = self.kwargs.get('epoch')
                     msg = "Could not detect epoch, PM correction disabled."
                     assert self.epoch is not None, msg
-                    self.mjd = epoch if epoch > 3000 else Time(epoch, format='decimalyear').mjd
+                    self.mjd = self.epoch if self.epoch > 3000 else Time(
+                        self.epoch, format='decimalyear').mjd
                 except AssertionError as e:
                     if self.kwargs.get('pm'):
                         self.logger.warning(e)
@@ -337,18 +341,18 @@ class Cutout:
     def _find_image(self):
         """Return DataFrame of survey fields containing coord."""
 
-        survey = self.survey[:-1]
+        survey = self.survey.replace('I', '').replace('V', '')
         try:
             image_df = pd.read_csv(aux_path + f'{survey}_fields.csv')
         except FileNotFoundError:
             raise FITSException(f"Missing field metadata csv for {survey}.")
-        
+
         beam_centre = SkyCoord(ra=image_df['cr_ra_pix'], dec=image_df['cr_dec_pix'],
                                unit=u.deg)
         image_df['dist_field_centre'] = beam_centre.separation(self.position).deg
 
-        sep = 1 * u.degree if self.survey == 'vlassI' else 5 * u.degree
-        return image_df[image_df.dist_field_centre < sep].reset_index(drop=True)
+        pbeamsize = 1 * u.degree if self.survey == 'vlass' else 5 * u.degree
+        return image_df[image_df.dist_field_centre < pbeamsize].reset_index(drop=True)
 
     def _obfuscate(self):
         """Remove all coordinates and identifying information."""
@@ -377,7 +381,7 @@ class Cutout:
 
         if self.kwargs.get('title', True):
             self.ax.set_title(SURVEYS.loc[self.survey]['name'], fontdict={'fontsize': 20,
-                                                                       'fontweight': 10})
+                                                                          'fontweight': 10})
         if self.kwargs.get('obfuscate', False):
             self._obfuscate()
 
@@ -406,9 +410,10 @@ class Cutout:
         """Plot survey data and position overlay."""
         self._plot_setup(fig, ax)
         self.data *= self.kwargs.get('sign', 1)
-        self.logger.debug(f'Max flux in cutout: {self.data.max():.2f} mJy.')
+        absmax = max(self.data.max(), self.data.min(), key=abs)
+        self.logger.debug(f"Max flux in cutout: {absmax:.2f} mJy.")
         rms = np.sqrt(np.mean(np.square(self.data)))
-        self.logger.debug(f'RMS flux in cutout: {rms:.2f} mJy.')
+        self.logger.debug(f"RMS flux in cutout: {rms:.2f} mJy.")
 
         assert (sum((~np.isnan(self.data).flatten())) > 0 and sum(self.data.flatten()) != 0), \
             f"No data in {self.survey}"
@@ -503,10 +508,12 @@ class Cutout:
                                           transform=self.ax.get_transform('world'))
                 self.ax.add_artist(overlay)
 
-        if self.plot_neighbors:
-            for idx, neighbor in self.neighbors.iterrows():
-                n = Ellipse((neighbor.ra_deg_cont, neighbor.dec_deg_cont),
-                            neighbor.min_axis / 3600, neighbor.maj_axis / 3600, -neighbor.pos_ang,
+        if self.plot_neighbours:
+            for idx, neighbour in self.neighbours.iterrows():
+                n = Ellipse((neighbour.ra_deg_cont, neighbour.dec_deg_cont),
+                            neighbour.min_axis / 3600,
+                            neighbour.maj_axis / 3600,
+                            -neighbour.pos_ang,
                             facecolor='none', edgecolor='c', ls=':', lw=2,
                             transform=self.ax.get_transform('world'))
                 self.ax.add_patch(n)
@@ -547,11 +554,11 @@ class ContourCutout(Cutout):
         self.epoch = self.kwargs.get('epoch', 2019.609728489631)
         self.epochtype = 'MJD' if self.epoch > 3e3 else 'decimalyear'
         self.mjd = Time(self.epoch, format=self.epochtype.lower()).mjd
-        
+
         if simbad is not None:
             simbad = table2df(simbad)
-            simbad = simbad[(simbad['OTYPE'].isin(['*', '**', 'PM*', 'Star', 'PSR', 'Pulsar', 'Flare*'])) |
-                            (simbad['SP_TYPE'].str.len() > 0)]
+            pm_types = ['*', '**', 'PM*', 'Star', 'PSR', 'Pulsar', 'Flare*']
+            simbad = simbad[(simbad['OTYPE'].isin(pm_types)) | (simbad['SP_TYPE'].str.len() > 0)]
 
             if len(simbad) == 0:
                 self.logger.warning("No high proper-motion objects within 180 arcsec.")
@@ -578,13 +585,13 @@ class ContourCutout(Cutout):
             simbad = simbad.rename(columns={'MAIN_ID': 'Object', 'OTYPE': 'Type',
                                             'DISTANCE_RESULT': 'Separation (arcsec)',
                                             'SP_TYPE': 'Spectral Type'})
-            self.logger.debug(f'SIMBAD results:\n {simbad}')
+            self.logger.info(f'SIMBAD results:\n {simbad}')
             self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)').head()
             nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
             self.pm_coord = newpos[nearest]
             object = self.simbad.loc[nearest].Object
             msg = f'Proper motion corrected {object} to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
-            self.logger.debug(msg)
+            self.logger.info(msg)
             missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
             if self.simbad['PM Corrected Separation (arcsec)'].min() > 15:
                 self.logger.warning("No PM corrected objects within 15 arcsec")
@@ -632,4 +639,3 @@ class ContourCutout(Cutout):
                             transform=self.ax.get_transform('world'),
                             label=f'{name} position at {self.epochtype} {self.epoch} ')
             self.ax.legend()
-
