@@ -120,7 +120,7 @@ def main(radius, contours, clabels, pm, epoch, sign, psf, corner, neighbours, an
     level = 'DEBUG' if verbose else 'INFO'
     logger = Logger(__name__, streamlevel=level).logger
 
-    if ':' in ra:
+    if ':' in ra or 'h' in ra:
         unit = u.hourangle
     else:
         unit = u.deg
