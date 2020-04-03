@@ -35,7 +35,7 @@ SURVEYS.set_index('survey', inplace=True)
 @click.option('-B', '--basesurvey', default='racsI',
               help="Name of survey to use for primary positional accuracy and time parameters.")
 @click.option('-C', '--cmap', type=str, default='gray_r',
-              help="Colorbar selection to contour plots.")
+              help="Name of colormap to use.")
 @click.option('-m', '--maxnorm', is_flag=True, help="Use data max for normalisation.")
 @click.option('-b', '--band', type=click.Choice(['g', 'r', 'i', 'z', 'y']), default='g',
               help="Filter band for optical surveys (e.g. PanSTARRS, DECam).")
@@ -120,10 +120,7 @@ def main(radius, contours, clabels, pm, epoch, sign, psf, corner, neighbours, an
     level = 'DEBUG' if verbose else 'INFO'
     logger = Logger(__name__, streamlevel=level).logger
 
-    if ':' in ra or 'h' in ra:
-        unit = u.hourangle
-    else:
-        unit = u.deg
+    unit = u.hourangle if ':' in ra or 'h' in ra else u.deg
 
     position = SkyCoord(ra=ra, dec=dec, unit=(unit, u.deg))
     psign = -1 if sign else 1
