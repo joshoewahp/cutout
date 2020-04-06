@@ -392,10 +392,10 @@ class Cutout:
             self.ax.text(0.05, 0.85, self.kwargs.get('annotation'), color=color,
                          weight='bold', transform=self.ax.transAxes)
 
-    def _add_cornermarker(self, ra, dec, span=1 / 500, offset=1 / 200):
+    def _add_cornermarker(self, ra, dec, span, offset):
         color = 'white' if self.cmap != 'gray_r' else 'r'
-        raline = Line2D(xdata=[ra + span,
-                               ra + offset],
+        cosdec = np.cos(np.radians(dec))
+        raline = Line2D(xdata=[ra + offset / cosdec, ra + span / cosdec],
                         ydata=[dec, dec],
                         color=color, linewidth=2,
                         path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()],
@@ -483,7 +483,9 @@ class Cutout:
         if self.plot_sources:
             if self.kwargs.get('corner'):
                 self._add_cornermarker(self.source.ra_deg_cont,
-                                       self.source.dec_deg_cont)
+                                       self.source.dec_deg_cont,
+                                       self.kwargs.get('corner_span', 20 / 3600),
+                                       self.kwargs.get('corner_offset', 10 / 3600))
             else:
                 self.sourcepos = Ellipse((self.source.ra_deg_cont,
                                           self.source.dec_deg_cont),
@@ -497,7 +499,10 @@ class Cutout:
 
         else:
             if self.kwargs.get('corner'):
-                self._add_cornermarker(self.ra, self.dec)
+                self._add_cornermarker(self.ra,
+                                       self.dec,
+                                       self.kwargs.get('corner_span', 20 / 3600),
+                                       self.kwargs.get('corner_offset', 10 / 3600))
             else:
                 self.bmin = 15
                 self.bmaj = 15
