@@ -1377,7 +1377,7 @@
 	"patchy": false,
 	"radio": false,
 	"cutout": true,
-	"radius": 0.025
+	"radius": 0.3
     },
     {
 	"survey": "galex_nuv",
