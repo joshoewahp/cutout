@@ -410,8 +410,9 @@ class Cutout:
 
     def plot(self, fig=None, ax=None):
         """Plot survey data and position overlay."""
+        self.sign = self.kwargs.get('sign', 1)
         self._plot_setup(fig, ax)
-        self.data *= self.kwargs.get('sign', 1)
+        self.data *= self.sign
         absmax = max(self.data.max(), self.data.min(), key=abs)
         self.logger.debug(f"Max flux in cutout: {absmax:.2f} mJy.")
         rms = np.sqrt(np.mean(np.square(self.data)))
@@ -611,6 +612,7 @@ class ContourCutout(Cutout):
             self.correct_pm = False
 
     def plot(self, fig=None, ax=None):
+        self.sign = self.kwargs.get('sign', 1)
         self._plot_setup(fig, ax)
 
         assert (sum((~np.isnan(self.data).flatten())) > 0 and sum(self.data.flatten()) != 0), \
@@ -625,7 +627,7 @@ class ContourCutout(Cutout):
             self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
         # Plot radio contours
-        self.radio.data *= self.kwargs.get('sign', 1)
+        self.radio.data *= self.sign
         self.peak = self.radio.data.max()
         color = 'blue' if self.cmap == 'hot' else 'orange'
         self.cs = self.ax.contour(self.radio.data, transform=self.ax.get_transform(self.radio.wcs),
