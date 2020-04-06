@@ -167,7 +167,7 @@ class Cutout:
             filepath = f'RACS_test4_1.05_{closest.field}.fits'
             pol = self.survey[-1]
         elif 'vast' in self.survey:
-            pattern = re.compile(r'vastp(\d[x])([IV])')
+            pattern = re.compile(r'vastp(\dx*)([IV])')
             epoch = pattern.sub(r'\1', self.survey)
             pol = pattern.sub(r'\2', self.survey)
             filepath = f'VAST_{closest.field}.EPOCH0{epoch}.{pol}.fits'
