@@ -433,7 +433,10 @@ class Cutout:
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
         if self.kwargs.get('bar', True):
-            self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
+            try:
+                self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
+            except UnboundLocalError:
+                self.logger.error("Colorbar failed. Upgrade to recent version of astropy ")
 
         if self.psf:
             try:
@@ -638,9 +641,9 @@ class ContourCutout(Cutout):
         if self.clabels:
             self.ax.clabel(self.cs, fontsize=10, fmt='%1.1f mJy')
         if self.bar:
-            self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)')
+            self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
 
-        if self.survey == 'panstarrs':
+        if self.survey == 'panstarrs' and self.kwargs.get('title', True):
             self.ax.set_title(f"{SURVEYS.loc[self.survey]['name']} ({self.band}-band)")
 
         # Plot PM corrected location
