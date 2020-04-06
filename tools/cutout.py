@@ -461,7 +461,8 @@ class Cutout:
                 cdelt = self.header['CDELT1']
             except KeyError:
                 cdelt = self.header['CD1_1']
-            beamsize_pix = self.bmaj / abs(cdelt) / 3600
+            beamavg = (self.bmaj + self.bmin) / 2
+            beamsize_pix = beamavg / abs(cdelt) / 3600
             ax_len_pix = abs(lhs[0] - rhs[0]) / abs(cdelt) / 3600
             beam = self.wcs.wcs_pix2world(beamsize_pix, beamsize_pix, 1)
             self.beamx = beam[0]
