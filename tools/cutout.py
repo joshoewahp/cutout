@@ -122,6 +122,8 @@ class Cutout:
 
             self.logger.debug(f'Source: \n {self.source}')
             if len(self.neighbours) > 0:
+                nn = self.neighbours.iloc[0]
+                self.logger.debug(f'Nearest neighbour coords: \n {nn.ra_deg_cont, nn.dec_deg_cont}')
                 self.logger.debug(f'Nearest 5 Neighbours \n {self.neighbours.head()}')
 
         except IndexError:
