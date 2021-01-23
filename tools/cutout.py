@@ -47,8 +47,15 @@ config.read('./config/config.ini')
 aux_path = config['DATA']['aux_path']
 vlass_path = config['DATA']['vlass_path']
 cutout_cache = config['DATA']['cutout_cache']
+on_system = config['DATA']['on_system']
 
-SURVEYS = pd.read_json('./config/surveys.json')
+if on_system == 'ada':
+    SURVEYS = pd.read_json('./config/surveys.json')
+elif on_system == 'nimbus':
+    SURVEYS = pd.read_json('./config/surveys_nimbus.json')
+else:
+    raise Exception("Need to set on_system to either 'ada' or 'nimbus' in config/config.ini")
+
 SURVEYS.set_index('survey', inplace=True)
 Simbad.add_votable_fields('otype', 'ra(d)', 'dec(d)', 'parallax',
                           'pmdec', 'pmra', 'distance',
@@ -164,8 +171,11 @@ class Cutout:
             filepath = f'{closest.epoch}/{closest.tile}/{closest.image}/{closest.filename}'
             image_path = vlass_path
         elif 'racs' in self.survey:
-            filepath = f'RACS_test4_1.05_{closest.field}.fits'
             pol = self.survey[-1]
+            if on_system == 'ada':
+                filepath = f'RACS_test4_1.05_{closest.field}.fits'
+            else:
+                filepath = f'RACS_{closest.field}.EPOCH00.{pol}.fits'
         elif 'vast' in self.survey:
             pattern = re.compile(r'vastp(\dx*)([IV])')
             epoch = pattern.sub(r'\1', self.survey)

@@ -2,6 +2,7 @@
 
 import sys
 import click
+import configparser
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,8 +11,17 @@ from astropy.coordinates import SkyCoord
 from tools.cutout import Cutout, ContourCutout, FITSException
 from tools.logger import Logger
 
+config = configparser.ConfigParser()
+config.read('./config/config.ini')
+on_system = config['DATA']['on_system']
 
-SURVEYS = pd.read_json('./config/surveys.json')
+if on_system == 'ada':
+    SURVEYS = pd.read_json('./config/surveys.json')
+elif on_system == 'nimbus':
+    SURVEYS = pd.read_json('./config/surveys_nimbus.json')
+else:
+    raise Exception("Need to set on_system to either 'ada' or 'nimbus' in config/config.ini")
+
 SURVEYS.set_index('survey', inplace=True)
 
 
