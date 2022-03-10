@@ -173,7 +173,7 @@ class Cutout:
             raise FITSException(f"No fields located at {self.position.ra:.2f}, {self.position.dec:.2f}")
 
         self.closest = fields.sort_values('dist_field_centre').iloc[0]
-        self.filepath = self.closest.path
+        self.filepath = self.closest[f'{self.stokes}_path']
 
         with fits.open(self.filepath) as hdul:
             logger.debug(f"Making cutout from FITS image located at {self.filepath}")
