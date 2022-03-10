@@ -61,11 +61,12 @@ logger = logging.getLogger(__name__)
 
 class Cutout:
 
-    def __init__(self, survey, position, radius, stokes='i', **kwargs):
+    def __init__(self, survey, position, size, stokes='i', **kwargs):
         self.survey = survey
         self.position = position
         self.ra = self.position.ra.to_value(u.deg)
         self.dec = self.position.dec.to_value(u.deg)
+        self.size = size
         self.stokes = stokes
         self.psf = kwargs.get('psf')
         self.cmap = kwargs.get('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
@@ -129,7 +130,7 @@ class Cutout:
             field=self.closest.field,
             stokes=self.stokes
         )
-        components = selavy.cone_search(self.position, 0.5 * self.radius * u.deg)
+        components = selavy.cone_search(self.position, 0.5 * self.size * u.deg)
 
         if components.empty:
             self.plot_source = False
@@ -177,9 +178,9 @@ class Cutout:
                 self.mjd = Time(header['DATE']).mjd
 
             try:
-                cutout = Cutout2D(data[0, 0, :, :], self.position, self.radius * u.deg, wcs=wcs)
+                cutout = Cutout2D(data[0, 0, :, :], self.position, self.size * u.deg, wcs=wcs)
             except IndexError:
-                cutout = Cutout2D(data, self.position, self.radius * u.deg, wcs=wcs)
+                cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
 
             self.data = cutout.data * 1000
             self.wcs = cutout.wcs
@@ -224,9 +225,9 @@ class Cutout:
             self.mjd = Time(self.header['DATE-OBS']).mjd
 
             try:
-                cutout = Cutout2D(data[0, 0, :, :], self.position, self.radius * u.deg, wcs=wcs)
+                cutout = Cutout2D(data[0, 0, :, :], self.position, self.size * u.deg, wcs=wcs)
             except IndexError:
-                cutout = Cutout2D(data, self.position, self.radius * u.deg, wcs=wcs)
+                cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
             self.data = cutout.data * 1000
             self.wcs = cutout.wcs
 
@@ -236,9 +237,9 @@ class Cutout:
                                                                         '{:.4f}',
                                                                         '{:.4f}',
                                                                         '{:.4f}',)
-        imgpath = str(path).format(self.radius * 60, self.ra, self.dec)
+        imgpath = str(path).format(self.size * 60, self.ra, self.dec)
         if not os.path.exists(imgpath):
-            pixelrad = int(self.radius * 120 * 120)
+            pixelrad = int(self.size * 120 * 120)
             service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
             url = (f"{service}?ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits"
                    f"&filters=grizy")
@@ -260,7 +261,7 @@ class Cutout:
                                                                                 '{:.4f}',
                                                                                 '{:.4f}',
                                                                                 '{:.4f}',)
-                path = str(path).format(self.radius * 60, self.ra, self.dec)
+                path = str(path).format(self.size * 60, self.ra, self.dec)
 
                 img = requests.get(url, allow_redirects=True)
 
@@ -282,7 +283,7 @@ class Cutout:
         cat = SURVEYS.loc[self.survey]['vizier']
 
         try:
-            table = v.query_region(self.position, radius=self.radius * u.deg, catalog=cat)
+            table = v.query_region(self.position, radius=self.size * u.deg, catalog=cat)
             table = table2df(table[0])
             det_id = table.sort_values('_r').iloc[0]['rDetectionID']
         except IndexError:
@@ -293,7 +294,7 @@ class Cutout:
         link = f"http://www.iphas.org/data/images/r{run[:3]}/r{run}-{ccd}.fits.fz"
 
         img = requests.get(link)
-        path = str(path).format(self.radius * 60, self.ra, self.dec)
+        path = str(path).format(self.size * 60, self.ra, self.dec)
 
         if not os.path.exists(path):
             with open(path, 'wb') as f:
@@ -303,7 +304,7 @@ class Cutout:
             self.header, data = hdul[1].header, hdul[1].data
             wcs = WCS(self.header, naxis=2)
             self.mjd = self.header['MJD-OBS']
-            cutout = Cutout2D(data, self.position, self.radius * u.deg, wcs=wcs)
+            cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
             theta = np.arctan2(self.header['CD1_1'], self.header['CD1_2']) * 180 / np.pi
 
             if abs(theta) - 90 > 45:
@@ -323,7 +324,7 @@ class Cutout:
 
         link = linka + 'get_image?IMAGE={}&SIZE={}&POS={},{}&FORMAT=fits'
 
-        table = requests.get(sm_query.format(self.ra, self.dec, self.radius))
+        table = requests.get(sm_query.format(self.ra, self.dec, self.size))
         df = pd.read_csv(io.StringIO(table.text))
         impos = f'{self.position.ra:.2f}, {self.position.dec:.2f}'
         assert len(df) > 0, f'No Skymapper image at {impos}'
@@ -335,7 +336,7 @@ class Cutout:
 
         img = requests.get(link)
 
-        path = str(path).format(self.band, self.mjd, self.radius * 60, self.ra, self.dec)
+        path = str(path).format(self.band, self.mjd, self.size * 60, self.ra, self.dec)
 
         if not os.path.exists(path):
             with open(path, 'wb') as f:
@@ -347,11 +348,11 @@ class Cutout:
 
     def _get_decam_cutout(self):
         """Fetch cutout data via DECam LS API."""
-        size = int(self.radius * 3600 / 0.262)
+        size = int(self.size * 3600 / 0.262)
         if size > 512:
             size = 512
-            maxradius = size * 0.262 / 3600
-            logger.warning(f"Using maximum DECam LS cutout radius of {maxradius:.3f} deg")
+            max_size = size * 0.262 / 3600
+            logger.warning(f"Using maximum DECam LS cutout size of {max_size:.3f} deg")
 
         link = f"http://legacysurvey.org/viewer/fits-cutout?ra={self.ra}&dec={self.dec}"
         link += f"&size={size}&layer=dr8&pixscale=0.262&bands={self.band}"
@@ -363,7 +364,7 @@ class Cutout:
         self.mjd = Time(2017.96, format='decimalyear').mjd
 
         path = cutout_cache / self.survey / 'dr8_jd{:.4f}_{:.4f}arcmin_{:.4f}_{:.4f}_{}band.fits'
-        path = str(path).format(self.mjd, self.radius * 60, self.ra, self.dec, self.band)
+        path = str(path).format(self.mjd, self.size * 60, self.ra, self.dec, self.band)
         if not os.path.exists(path):
             with open(path, 'wb') as f:
                 f.write(img.content)
@@ -385,14 +386,14 @@ class Cutout:
 
         sv = SkyView()
         path = cutout_cache / self.survey / '{:.3f}arcmin_{:.3f}_{:.3f}.fits'
-        path = str(path).format(self.radius * 60, self.ra, self.dec)
+        path = str(path).format(self.size * 60, self.ra, self.dec)
         progress = self.kwargs.get('progress', False)
 
         if not os.path.exists(path):
             skyview_key = SURVEYS.loc[self.survey].skyview
             try:
                 hdul = sv.get_images(position=self.position, survey=[skyview_key],
-                                     radius=self.radius * u.deg, show_progress=progress)[0][0]
+                                     radius=self.size * u.deg, show_progress=progress)[0][0]
             except IndexError:
                 raise FITSException('Skyview image list returned empty.')
             except ValueError:
@@ -734,7 +735,7 @@ class Cutout:
 
 class ContourCutout(Cutout):
 
-    def __init__(self, survey, position, radius, **kwargs):
+    def __init__(self, survey, position, size, **kwargs):
 
         self.contours = kwargs.get('contours', 'racs-low')
         self.clabels = kwargs.get('clabels', False)
@@ -743,11 +744,11 @@ class ContourCutout(Cutout):
             data = kwargs.pop('data')
         except KeyError:
             data = None
-        self.radio = Cutout(self.contours, position, radius, **kwargs)
+        self.radio = Cutout(self.contours, position, size, **kwargs)
         self.cmjd = self.radio.mjd
 
         self.correct_pm = kwargs.get('pm')
-        super().__init__(survey, position, radius, data=data, **kwargs)
+        super().__init__(survey, position, size, data=data, **kwargs)
 
         if self.correct_pm:
             self._correct_proper_motion()

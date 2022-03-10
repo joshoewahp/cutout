@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 @click.command()
-@click.option('-r', '--radius', default=None, help="Size of the cutout in degrees.", type=float)
+@click.option('-r', '--size', default=None, type=float,
+              help="Size of the cutout in degrees. This is the edge length, not a cone search size.")
 @click.option('-s', '--stokes', type=click.Choice(['i', 'v']), default='i',
               help="Stokes parameter.")
 @click.option('-P', '--sign', is_flag=True, default=False, help="Invert polarisation sign.")
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 @click.argument('RA', type=str)
 @click.argument('Dec', type=str)
 @click.argument('Survey', type=str)
-def main(radius, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbours, annotation, header,
+def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbours, annotation, header,
          basesurvey, cmap, maxnorm, vmax, vmin, band, obfuscate, verbose, save, savefits, ra, dec, survey):
     """Generate image cutout from multi-wavelength survey data.
 
@@ -126,25 +127,25 @@ def main(radius, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighb
     psign = -1 if sign else 1
 
     s = SURVEYS.loc[survey]
-    if not radius:
-        radius = s.radius
+    if not size:
+        size = s.cutout_size
 
     try:
         if s.radio and not contours:
-            cutout = Cutout(survey, position, radius=radius, psf=psf, corner=corner,
+            cutout = Cutout(survey, position, size=size, psf=psf, corner=corner,
                             neighbours=neighbours, annotation=annotation, stokes=stokes,
                             basesurvey=basesurvey, band=band, maxnorm=maxnorm, vmax=vmax,
                             vmin=vmin, cmap=cmap, obfuscate=obfuscate, verbose=verbose,
                             sign=psign, pm=pm, epoch=epoch)
         elif contours:
-            cutout = ContourCutout(survey, position, radius=radius, contours=contours,
+            cutout = ContourCutout(survey, position, size=size, contours=contours,
                                    clabels=clabels, psf=psf, corner=corner, stokes=stokes,
                                    neighbours=neighbours, annotation=annotation,
                                    basesurvey=basesurvey, band=band, cmap=cmap,
                                    maxnorm=maxnorm, vmax=vmax, vmin=vmin, obfuscate=obfuscate,
                                    verbose=verbose, sign=psign, pm=pm, epoch=epoch)
         else:
-            cutout = ContourCutout(survey, position, radius=radius, contours='racs-low',
+            cutout = ContourCutout(survey, position, size=size, contours='racs-low',
                                    stokes=stokes, psf=psf, corner=corner, neighbours=neighbours,
                                    annotation=annotation, basesurvey=basesurvey, band=band,
                                    cmap=cmap, maxnorm=maxnorm, vmax=vmax, vmin=vmin, sign=psign,
