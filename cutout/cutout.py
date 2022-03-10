@@ -31,10 +31,6 @@ from astroquery.vizier import Vizier
 from astropy.wcs.utils import proj_plane_pixel_scales, celestial_frame_to_wcs, wcs_to_celestial_frame
 from astropy.visualization.wcsaxes import SphericalCircle
 from astropy.visualization import ZScaleInterval, PowerDistStretch, ImageNormalize
-from astropy.nddata import Cutout2D
-from astroquery.simbad import Simbad
-from astroquery.skyview import SkyView
-from astroquery.vizier import Vizier
 from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, Rectangle
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
@@ -42,6 +38,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from astroutils.io import table2df, find_fields, FITSException, get_surveys, get_config
+from astroutils.source import SelavyCatalogue
 
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
@@ -58,42 +55,20 @@ Simbad.add_votable_fields('otype', 'ra(d)', 'dec(d)', 'parallax',
                           'pmdec', 'pmra', 'distance',
                           'sptype', 'distance_result')
 
-SEL2AEG_COLS = {
-    'island': 'island_id',
-    'source': 'component_id',
-    'local_rms': 'rms_image',
-    'ra': 'ra_deg_cont',
-    'dec': 'dec_deg_cont',
-    'err_ra': 'ra_deg_cont_err',
-    'err_dec': 'dec_deg_cont_err',
-    'peak_flux': 'flux_peak',
-    'err_peak_flux': 'flux_peak_err',
-    'int_flux': 'flux_int',
-    'err_int_flux': 'flux_int_err',
-    'a': 'maj_axis',
-    'err_a': 'maj_axis_err',
-    'b': 'min_axis',
-    'err_b': 'min_axis_err',
-    'pa': 'pos_ang',
-    'err_pa': 'pos_ang_err',
-}
 
 logger = logging.getLogger(__name__)
 
 
 class Cutout:
 
-    def __init__(self, survey, position, radius, **kwargs):
+    def __init__(self, survey, position, radius, stokes='i', **kwargs):
         self.survey = survey
         self.position = position
         self.ra = self.position.ra.to_value(u.deg)
         self.dec = self.position.dec.to_value(u.deg)
-        self.radius = radius
-        self.basesurvey = kwargs.get('basesurvey', 'racs-low')
-        self.stokes = kwargs.get('stokes', 'i')
+        self.stokes = stokes
         self.psf = kwargs.get('psf')
-        self.cmap = kwargs.get('cmap', 'gray_r' if self.stokes == 'i' else 'coolwarm')
-        self.color = 'k' if self.cmap == 'hot' else 'black'
+        self.cmap = kwargs.get('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
         self.band = kwargs.get('band', 'g')
         self.rotate_axes = False
 
@@ -106,99 +81,11 @@ class Cutout:
             raise FITSException(msg)
         finally:
             if not any(c in self.survey for c in ['racs', 'vast', 'swagx']):
-                self.plot_sources = False
+                self.plot_source = False
                 self.plot_neighbours = False
 
     def __repr__(self):
         return f"Cutout({self.survey}, ra={self.ra:.2f}, dec={self.dec:.2f})"
-
-    def _get_source(self):
-        try:
-            pattern = re.compile(r'\S*(\d{4}[+-]\d{2}[AB])\S*')
-            sbidpattern = re.compile(r'\S*(SB\d{4,5})\S*')
-            selpath = SURVEYS.loc[self.survey][f'selavy_path_{self.stokes}']
-
-            # Check if selpath is NaN (happens when using ContourCutout)
-            # Should make this less hacky later
-            if selpath != selpath:
-                selpath = SURVEYS.loc[self.contours][f'selavy_path_{self.stokes}']
-
-            selfiles = glob.glob(f'{selpath}/*components.txt')
-
-            # If no components available, try raw selavy file
-            if len(selfiles) == 0:
-                selfiles = glob.glob(f'{selpath}/*.txt')
-                if len(selfiles) == 0:
-                    selfiles = glob.glob(f'{selpath}/*.csv')
-
-            sel = [s for s in selfiles if pattern.sub(r'\1', self.filepath) in s]
-
-            if len(sel) == 0:
-                sel = [s for s in selfiles if sbidpattern.sub(r'\1', self.filepath) in s]
-                aegean = True
-            else:
-                aegean = False
-
-            if aegean:
-                if len(sel) > 1:
-                    df = pd.concat([pd.read_csv(s) for s in sel])
-                else:
-                    df = pd.read_csv(sel[0])
-                df.rename(columns={old: new for old, new in SEL2AEG_COLS.items()}, inplace=True)
-            else:
-                if len(sel) > 1:
-                    df = pd.concat([pd.read_fwf(s, skiprows=[1, ]) for s in sel])
-                else:
-                    df = pd.read_fwf(sel[0], skiprows=[1, ])
-
-            # If using raw selavy, check that header has been properly removed
-            if df.shape[1] < 5:
-                logger.warning(f"No components txt, reading raw selavy at {sel[0]} instead.")
-                df = pd.read_fwf(sel[0], skiprows=44, comment=r'#')
-                df = df.iloc[2:].reset_index(drop=True)
-                df.rename(columns={'RA.1': 'ra_deg_cont',
-                                   'DEC.1': 'dec_deg_cont',
-                                   'F_peak': 'flux_peak',
-                                   'MAJ': 'maj_axis',
-                                   'MIN': 'min_axis',
-                                   'PA': 'pos_ang',
-                                   }, inplace=True)
-                floatcols = ['ra_deg_cont', 'dec_deg_cont', 'flux_peak', 'maj_axis', 'min_axis', 'pos_ang']
-                df[floatcols] = df[floatcols].astype(np.float64)
-                df['rms_image'] = 0.25
-                df['flux_peak'] *= 1000
-
-            coords = SkyCoord(df.ra_deg_cont, df.dec_deg_cont, unit=u.deg)
-            d2d = self.position.separation(coords)
-            df['d2d'] = d2d.arcsec
-            sources = df.iloc[np.where(d2d.deg < 0.5 * self.radius)[0]]
-            sources = sources.sort_values('d2d', ascending=True)
-
-            if any(sources.d2d < self.pos_err / 3600):
-                self.source = sources.iloc[0]
-                self.neighbours = sources.iloc[1:]
-                self.plot_sources = True
-            else:
-                self.source = None
-                self.neighbours = sources
-                self.plot_sources = False
-
-            self.plot_neighbours = self.kwargs.get('neighbours', True)
-
-            logger.debug(f'Source: \n {self.source}')
-            logger.debug(f'Coords: {coords[np.argmin(d2d)].to_string(style="hmsdms")}')
-            if len(self.neighbours) > 0:
-                nn = self.neighbours.iloc[0]
-                logger.debug(f'Nearest neighbour coords: \n {nn.ra_deg_cont, nn.dec_deg_cont}')
-                neighbour_view = self.neighbours[['ra_deg_cont', 'dec_deg_cont', 'maj_axis', 'min_axis',
-                                                  'flux_peak', 'rms_image', 'd2d']]
-                logger.debug(f'Nearest 5 Neighbours \n {neighbour_view.head()}')
-
-        except IndexError as e:
-            logger.debug(e)
-            self.plot_sources = False
-            self.plot_neighbours = False
-            logger.warning('No nearby sources found.')
 
     def _get_cutout(self):
 
@@ -236,37 +123,49 @@ class Cutout:
 
         return
 
+    def _get_source(self):
+        selavy = SelavyCatalogue.from_params(
+            epoch=self.survey,
+            field=self.closest.field,
+            stokes=self.stokes
+        )
+        components = selavy.cone_search(self.position, 0.5 * self.radius * u.deg)
+
+        if components.empty:
+            self.plot_source = False
+            self.plot_neighbours = False
+            logger.warning('No nearby components found.')
+
+        if any(components.d2d < self.pos_err / 3600):
+            self.source = components.iloc[0]
+            self.neighbours = components.iloc[1:]
+            self.plot_source = True
+        else:
+            self.source = None
+            self.neighbours = components
+            self.plot_source = False
+
+        self.plot_neighbours = self.kwargs.get('neighbours', True)
+
+        logger.debug(f'Source: \n {self.source}')
+        # logger.debug(f'Coords: {components[np.argmin(d2d)].to_string(style="hmsdms")}')
+        if len(self.neighbours) > 0:
+            nn = self.neighbours.iloc[0]
+            logger.debug(f'Nearest neighbour components: \n {nn.ra_deg_cont, nn.dec_deg_cont}')
+            neighbour_view = self.neighbours[['ra_deg_cont', 'dec_deg_cont', 'maj_axis', 'min_axis',
+                                                'flux_peak', 'rms_image', 'd2d']]
+            logger.debug(f'Nearest 5 Neighbours \n {neighbour_view.head()}')
+
     def _get_local_cutout(self):
         """Fetch cutout data via local FITS images (e.g. RACS / VLASS)."""
 
         fields = self._find_image()
-        assert len(fields) > 0, f"No fields located at {self.position.ra:.2f}, {self.position.dec:.2f}"
 
-        closest = fields[fields.dist_field_centre == fields.dist_field_centre.min()].iloc[0]
-        image_path = SURVEYS.loc[self.survey][f'image_path_{self.stokes}']
+        if not len(fields) > 0:
+            raise FITSException(f"No fields located at {self.position.ra:.2f}, {self.position.dec:.2f}")
 
-        if self.survey == 'vlass':
-            filepath = f'{closest.epoch}/{closest.tile}/{closest.image}/{closest.filename}'
-            image_path = vlass_path
-        elif self.survey == 'racs-low':
-            filepath = f'RACS_test4_1.05_{closest.field}A.fits'
-        elif self.survey == 'racs-mid':
-            filepath = f'image.{self.stokes.lower()}.VAST_{closest.field}.{closest.sbid}.cont.taylor.0.restored.conv.fits'
-        elif 'vast' in self.survey:
-            pattern = re.compile(r'vastp(\d+x*)')
-            epoch = pattern.sub(r'\1', self.survey)
-            zeropad = '0' if (len(epoch) == 1 or len(epoch) == 2 and epoch[-1] == 'x') else ''
-            filepath = f'VAST_{closest.field}A.EPOCH{zeropad}{epoch}.{self.stokes.upper()}.fits'
-        elif 'swagx' in self.survey:
-            filepath = f'image.{self.stokes.lower()}.{closest.field}.cont.taylor.0.restored.fits'
-        else:
-            filepath = f'*{closest.field}*0.restored.fits'
-
-        try:
-            self.filepath = glob.glob(image_path + filepath)[0]
-        except IndexError:
-            msg = f'Could not match {self.survey} image filepath: \n{image_path + filepath}'
-            raise FITSException(msg)
+        self.closest = fields.sort_values('dist_field_centre').iloc[0]
+        self.filepath = self.closest.path
 
         with fits.open(self.filepath) as hdul:
             logger.debug(f"Making cutout from FITS image located at {self.filepath}")
@@ -286,7 +185,6 @@ class Cutout:
             self.wcs = cutout.wcs
             self.header = self.wcs.to_header()
 
-
             cdelt1, cdelt2 = proj_plane_pixel_scales(cutout.wcs)
             self.header.remove("PC1_1", ignore_missing=True)
             self.header.remove("PC2_2", ignore_missing=True)
@@ -299,11 +197,11 @@ class Cutout:
             )
 
         if any(s in self.survey for s in ['racs', 'vast', 'swagx']):
-            self.pos_err = SURVEYS.loc[self.basesurvey].pos_err
+            self.pos_err = SURVEYS.loc[self.survey].pos_err
             self._get_source()
         else:
             # Probably using vlass, yet to include aegean catalogs
-            self.plot_sources = False
+            self.plot_source = False
             self.plot_neighbours = False
 
     def _get_mwats_cutout(self):
@@ -542,9 +440,10 @@ class Cutout:
             self.ax.coords.grid(color='white', alpha=0.5)
 
         if self.kwargs.get('title', True):
-            self.ax.set_title(SURVEYS.loc[self.survey]['name'], fontdict={'fontsize': 20,
-                                                                          'fontweight': 10})
-        if self.kwargs.get('coords') == 'compact':
+            self.ax.set_title(SURVEYS.loc[self.survey]['name'],
+                              fontdict={'fontsize': 20, 'fontweight': 10})
+
+        if self.kwargs.get('compact', False):
             tickcolor = 'k' if np.nanmax(np.abs(self.data)) == np.nanmax(self.data) else 'gray'
             self.ax.tick_params(axis='both', direction='in', length=5, color=tickcolor)
             lon = self.ax.coords[0]
@@ -562,6 +461,7 @@ class Cutout:
                 lon.set_ticklabel_position('lb')
                 lat.set_ticks_position('lb')
                 lat.set_ticklabel_position('lb')
+
                 self.set_xlabel("Dec (J2000)")
                 self.set_ylabel("RA (J2000)")
             else:
@@ -590,6 +490,8 @@ class Cutout:
                                        clip=True)
 
     def _align_ylabel(self, ylabel):
+        """Consistently offset y-axis label with varying coordinate label size."""
+        
         # Get coordinates of topleft pixel
         topleft = self.wcs.wcs_pix2world(0, self.data.shape[1] + 1, 1)
         dms_tick = SkyCoord(ra=topleft[0], dec=topleft[1], unit=u.deg).dec.dms
@@ -678,14 +580,17 @@ class Cutout:
 
     def hide_coords(self, axis='both', ticks=True, labels=True):
         """Remove all coordinates and identifying information."""
+
         lon = self.ax.coords[0]
         lat = self.ax.coords[1]
+
         if axis in ['x', 'both']:
             lon.set_axislabel(' ')
             if labels:
                 lon.set_ticklabel_visible(False)
             if ticks:
                 lon.set_ticks_visible(False)
+
         if axis in ['y', 'both']:
             lat.set_axislabel(' ')
             if labels:
@@ -695,16 +600,19 @@ class Cutout:
 
     def plot(self, fig=None, ax=None):
         """Plot survey data and position overlay."""
+
         self.sign = self.kwargs.get('sign', 1)
         self._plot_setup(fig, ax)
         self.data *= self.sign
+
         absmax = max(self.data.max(), self.data.min(), key=abs)
-        logger.debug(f"Max flux in cutout: {absmax:.2f} mJy.")
         rms = np.sqrt(np.mean(np.square(self.data)))
+
+        logger.debug(f"Max flux in cutout: {absmax:.2f} mJy.")
         logger.debug(f"RMS flux in cutout: {rms:.2f} mJy.")
 
-        assert (sum((~np.isnan(self.data).flatten())) > 0 and sum(self.data.flatten()) != 0), \
-            f"No data in {self.survey}"
+        assert (sum((~np.isnan(self.data).flatten())) > 0 and
+                sum(self.data.flatten()) != 0), f"No data in {self.survey}"
 
         if self.stokes == 'v':
             self.cmap = plt.cm.coolwarm
@@ -728,7 +636,7 @@ class Cutout:
                     self.bmaj = self.psf[0]
                     self.bmin = self.psf[1]
                     self.bpa = 0
-                    logger.warning('Using supplied BMAJ/BMin. Assuming BPA=0')
+                    logger.warning('Using supplied BMAJ/BMIN. Assuming BPA=0')
                 except ValueError:
                     logger.error('No PSF information supplied.')
 
@@ -754,18 +662,18 @@ class Cutout:
             self.ax.add_artist(self.beam)
 
         if self.kwargs.get('source', True):
-            if self.plot_sources:  # refactor this to plot_source_ellipse
+            if self.plot_source:
                 if self.kwargs.get('corner'):
                         self._add_cornermarker(self.source.ra_deg_cont, self.source.dec_deg_cont)
                 else:
                     self.sourcepos = Ellipse((self.source.ra_deg_cont,
-                                            self.source.dec_deg_cont),
-                                            self.source.min_axis / 3600,
-                                            self.source.maj_axis / 3600,
-                                            -self.source.pos_ang,
-                                            facecolor='none', edgecolor='r',
-                                            ls=':', lw=2,
-                                            transform=self.ax.get_transform('world'))
+                                              self.source.dec_deg_cont),
+                                             self.source.min_axis / 3600,
+                                             self.source.maj_axis / 3600,
+                                             -self.source.pos_ang,
+                                             facecolor='none', edgecolor='r',
+                                             ls=':', lw=2,
+                                             transform=self.ax.get_transform('world'))
                     self.ax.add_patch(self.sourcepos)
 
         else:
@@ -782,7 +690,7 @@ class Cutout:
                                           facecolor='none',
                                           transform=self.ax.get_transform('world'))
                 self.ax.add_artist(overlay)
-        if self.plot_sources:
+        if self.plot_source:
             self.sourcepos = Ellipse((self.source.ra_deg_cont,
                                       self.source.dec_deg_cont),
                                      self.source.min_axis / 3600,
@@ -794,7 +702,8 @@ class Cutout:
             self.ax.add_patch(self.sourcepos)
         if self.plot_neighbours:
             for idx, neighbour in self.neighbours.iterrows():
-                n = Ellipse((neighbour.ra_deg_cont, neighbour.dec_deg_cont),
+                n = Ellipse((neighbour.ra_deg_cont,
+                             neighbour.dec_deg_cont),
                             neighbour.min_axis / 3600,
                             neighbour.maj_axis / 3600,
                             -neighbour.pos_ang,
@@ -807,7 +716,8 @@ class Cutout:
         self.fig.savefig(path, format=fmt, bbox_inches='tight')
 
     def savefits(self, path):
-        """Export FITS cutout to path"""
+        """Save FITS cutout."""
+        
         header = self.wcs.to_header()
         hdu = fits.PrimaryHDU(data=self.data, header=header)
         hdu.writeto(path)
