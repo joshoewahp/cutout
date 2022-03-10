@@ -125,12 +125,19 @@ class Cutout:
         return
 
     def _get_source(self):
-        selavy = SelavyCatalogue.from_params(
-            epoch=self.survey,
-            field=self.closest.field,
-            stokes=self.stokes
-        )
-        components = selavy.cone_search(self.position, 0.5 * self.size * u.deg)
+        try:
+            selavy = SelavyCatalogue.from_params(
+                epoch=self.survey,
+                field=self.closest.field,
+                stokes=self.stokes
+            )
+            components = selavy.cone_search(self.position, 0.5 * self.size * u.deg)
+        except FileNotFoundError:
+            logger.warning(f"Selavy files not found for {self.survey} Stokes {self.stokes}, disabling source ellipses.")
+            self.plot_source = False
+            self.plot_neighbours = False
+
+            return
 
         if components.empty:
             self.plot_source = False
