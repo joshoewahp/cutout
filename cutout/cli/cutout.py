@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from astropy.coordinates import SkyCoord
 
-from cutout import Cutout, ContourCutout
+from cutout import Cutout, ContourCutout, CornerMarker
 from astroutils.logger import setupLogger
 from astroutils.io import FITSException, get_surveys
 
@@ -34,15 +34,15 @@ logger = logging.getLogger(__name__)
               help="Epoch in either decimalyear or mjd format.")
 @click.option('-p', '--psf', is_flag=True, help="Display the PSF alongside cutout.")
 @click.option('-L', '--corner', is_flag=True, default=False,
-              help="Use corner marker instead of source ellipse.")
+              help="Display corner marker at central cutout position.")
 @click.option('--neighbours/--no-neighbours', default=True,
               help="Display location of neighbouring sources.")
 @click.option('-t', '--annotation', type=str, default=None,
               help="Annotated text.")
+@click.option('-T', '--title', type=str, default=None,
+              help="Cutout plot title. Defaults to survey name.")
 @click.option('-H', '--header', is_flag=True, default=False,
               help="Display FITS header of target data.")
-@click.option('-B', '--basesurvey', default='racs-low',
-              help="Name of survey to use for primary positional accuracy and time parameters.")
 @click.option('-C', '--cmap', type=str, default='gray_r',
               help="Name of colormap to use.")
 @click.option('-m', '--maxnorm', is_flag=True, help="Use data max for normalisation.")
@@ -60,34 +60,23 @@ logger = logging.getLogger(__name__)
 @click.argument('RA', type=str)
 @click.argument('Dec', type=str)
 @click.argument('Survey', type=str)
-def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbours, annotation, header,
-         basesurvey, cmap, maxnorm, vmax, vmin, band, obfuscate, verbose, save, savefits, ra, dec, survey):
+def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbours, annotation, title, header,
+         cmap, maxnorm, vmax, vmin, band, obfuscate, verbose, save, savefits, ra, dec, survey):
     """Generate image cutout from multi-wavelength survey data.
 
     Available surveys:
 
     \b
+    ---------------------------------
     Radio
     ---------------------------------
-    gw1             s190814bv Epoch 1
-    gw2             s190814bv Epoch 2
-    gw3             s190814bv Epoch 3
-    gw4             s190814bv Epoch 4
-    swagx                      SWAG-X
     racs-low                 RACS Low
     racs-mid                 RACS Mid
-    vastp1                    VAST P1
-    vastp2                    VAST P2
-    vastp3x                  VAST P3x
-    vastp4x                  VAST P4x
-    vastp5x                  VAST P5x
-    vastp6x                  VAST P6x
-    vastp7x                  VAST P7x
-    vastp8                    VAST P8
-    vastp9                    VAST P9
-    vastp10x                VAST P10x
-    vastp11x                VAST P11x
-    vastp12                  VAST P12
+    vastp[Nx]   VAST Pilot Epoch N[x]
+    gw[N]           s190814bv Epoch N
+    swagx                      SWAG-X
+    dwf-ngc[N]    DWF '21 NGC Epoch N
+    dwf-frb[N]    DWF '21 FRB Epoch N
     vlass                       VLASS
     sumss                       SUMSS
     nvss                         NVSS
@@ -132,27 +121,60 @@ def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbou
 
     try:
         if s.radio and not contours:
-            cutout = Cutout(survey, position, size=size, psf=psf, corner=corner,
-                            neighbours=neighbours, annotation=annotation, stokes=stokes,
-                            basesurvey=basesurvey, band=band, maxnorm=maxnorm, vmax=vmax,
-                            vmin=vmin, cmap=cmap, obfuscate=obfuscate, verbose=verbose,
-                            sign=psign, pm=pm, epoch=epoch)
-        elif contours:
-            cutout = ContourCutout(survey, position, size=size, contours=contours,
-                                   clabels=clabels, psf=psf, corner=corner, stokes=stokes,
-                                   neighbours=neighbours, annotation=annotation,
-                                   basesurvey=basesurvey, band=band, cmap=cmap,
-                                   maxnorm=maxnorm, vmax=vmax, vmin=vmin, obfuscate=obfuscate,
-                                   verbose=verbose, sign=psign, pm=pm, epoch=epoch)
+            cutout = Cutout(
+                survey,
+                position,
+                size=size,
+                stokes=stokes,
+                sign=psign,
+                psf=psf, 
+                neighbours=neighbours,
+                band=band,
+                cmap=cmap,
+                maxnorm=maxnorm,
+                vmax=vmax,
+                vmin=vmin,
+                pm=pm,
+                epoch=epoch
+            )
+
         else:
-            cutout = ContourCutout(survey, position, size=size, contours='racs-low',
-                                   stokes=stokes, psf=psf, corner=corner, neighbours=neighbours,
-                                   annotation=annotation, basesurvey=basesurvey, band=band,
-                                   cmap=cmap, maxnorm=maxnorm, vmax=vmax, vmin=vmin, sign=psign,
-                                   obfuscate=obfuscate, verbose=verbose, pm=pm, epoch=epoch)
+            if not contours:
+                contours='racs-low'
+
+            cutout = ContourCutout(
+                survey,
+                position,
+                size=size,
+                stokes=stokes,
+                sign=psign,
+                contours=contours,
+                clabels=clabels,
+                psf=psf,
+                neighbours=neighbours,
+                band=band,
+                cmap=cmap,
+                maxnorm=maxnorm,
+                vmax=vmax,
+                vmin=vmin,
+                pm=pm,
+                epoch=epoch
+            )
 
         cutout.plot()
 
+        if corner:
+            span = len(cutout.data) / 4
+            offset = len(cutout.data) / 8
+            corner = CornerMarker(position, cutout.wcs, colour='r', span=span, offset=offset)
+            cutout.add_cornermarker(corner)
+
+        if annotation:
+            cutout.add_annotation(annotation, location='upper left')
+
+        if obfuscate:
+            cutout.hide_coords()
+            
         if header:
             logger.info(cutout.header.items)
 
