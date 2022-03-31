@@ -28,7 +28,7 @@ from matplotlib.patches import Ellipse
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
 from pathlib import Path
 
-from astroutils.io import table2df, FITSException, get_surveys, get_config
+from astroutils.io import FITSException, get_surveys, get_config
 from cutout.services import (
     RawCutout,
     LocalCutout,
@@ -632,7 +632,7 @@ class ContourCutout(Cutout):
 
         # Catch SIMBAD failure either from None return of query or no stellar type matches in region
         try:
-            simbad = table2df(simbad)
+            simbad = simbad.to_pandas()
             pm_types = ['*', '**', 'PM*', 'EB*', 'Star', 'PSR', 'Pulsar', 'Flare*']
             simbad = simbad[(simbad['OTYPE'].isin(pm_types)) | (simbad['SP_TYPE'].str.len() > 0)]
 

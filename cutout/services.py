@@ -18,7 +18,7 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 from pathlib import Path
 from urllib.error import HTTPError
 
-from astroutils.io import table2df, find_fields, FITSException, get_surveys, get_config
+from astroutils.io import find_fields, FITSException, get_surveys, get_config
 from astroutils.source import SelavyCatalogue
 
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
@@ -31,7 +31,6 @@ cutout_cache = aux_path / 'cutouts'
 
 SURVEYS = get_surveys()
 SURVEYS.set_index('survey', inplace=True)
-
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +193,7 @@ class PanSTARRSCutout(CutoutService):
         pixsize = int(cutout.size * 120 * 120)
         service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
         url = f"{service}?ra={cutout.ra}&dec={cutout.dec}&size={pixsize}&format=fits&filters=grizy"
-        table = table2df(Table.read(url, format='ascii'))
+        table = Table.read(url, format='ascii').to_pandas()
 
         # Check cutouts exist at position
         msg = f"No PanSTARRS1 image at {cutout.ra:.2f}, {cutout.dec:.2f}"
@@ -243,7 +242,7 @@ class IPHASCutout(CutoutService):
         cat = SURVEYS.loc[cutout.survey]['vizier']
 
         table = v.query_region(cutout.position, radius=cutout.size * u.deg, catalog=cat)
-        table = table2df(table[0]).sort_values('_r')
+        table = table[0].to_pandas().sort_values('_r')
 
         # Check that iPHaS image exists at position
         if table.empty:
