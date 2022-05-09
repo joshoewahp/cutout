@@ -15,6 +15,9 @@ astroutils = {git = "https://github.com/joshoewahp/astroutils.git", rev = "main"
 click = "^8.0.4"
 
 [tool.poetry.dev-dependencies]
+pytest = "^7.1.1"
+pytest-cov = "^3.0.0"
+pytest-mock = "^3.7.0"
 
 [tool.poetry.scripts]
 cutout = "cutout.cli.cutout:main"

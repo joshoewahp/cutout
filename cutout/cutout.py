@@ -5,58 +5,117 @@ Cutout module documentation
 
 import io
 import os
-import re
 import sys
-import glob
 import time
 import logging
-import requests
 import warnings
-import matplotlib
-import configparser
 import numpy as np
 import pandas as pd
 import astropy.units as u
-import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
-from astropy.coordinates import SkyCoord, Distance, Angle, SkyOffsetFrame, ICRS
+import matplotlib.pyplot as plt
+from astropy.coordinates import SkyCoord, Distance
 from astropy.io import fits
-from astropy.wcs import WCS, FITSFixedWarning
 from astropy.time import Time
-from astropy.table import Table
-from astropy.nddata import Cutout2D
+from astropy.visualization import ZScaleInterval, ImageNormalize
+from astropy.wcs import WCS, FITSFixedWarning
+from astropy.wcs.utils import proj_plane_pixel_scales
 from astroquery.simbad import Simbad
-from astroquery.skyview import SkyView
-from astroquery.vizier import Vizier
-from astropy.wcs.utils import proj_plane_pixel_scales, celestial_frame_to_wcs, wcs_to_celestial_frame
-from astropy.visualization.wcsaxes import SphericalCircle
-from astropy.visualization import ZScaleInterval, PowerDistStretch, ImageNormalize
+from dataclasses import dataclass
 from matplotlib.lines import Line2D
-from matplotlib.patches import Ellipse, Rectangle
+from matplotlib.offsetbox import AnchoredText
+from matplotlib.patches import Ellipse
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
-from pathlib import Path
-from urllib.error import HTTPError
 
-from astroutils.io import table2df, find_fields, FITSException, get_surveys, get_config
-from astroutils.source import SelavyCatalogue
+from astroutils.io import FITSException, get_surveys
+from cutout.services import (
+    RawCutout,
+    LocalCutout,
+    MWATSCutout,
+    SkymapperCutout,
+    PanSTARRSCutout,
+    DECamCutout,
+    IPHASCutout,
+    SkyviewCutout,
+)
 
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
 
-config = get_config()
-aux_path = Path(config['DATA']['aux_path'])
-vlass_path = Path(config['DATA']['vlass_path'])
-cutout_cache = aux_path / 'cutouts'
-
 SURVEYS = get_surveys()
 SURVEYS.set_index('survey', inplace=True)
 
-Simbad.add_votable_fields('otype', 'ra(d)', 'dec(d)', 'parallax',
-                          'pmdec', 'pmra', 'distance',
-                          'sptype', 'distance_result')
-
+Simbad.add_votable_fields(
+    'otype',
+    'ra(d)',
+    'dec(d)',
+    'parallax',
+    'pmdec',
+    'pmra',
+    'distance',
+    'sptype',
+    'distance_result',
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CornerMarker:
+    position: SkyCoord
+    wcs: WCS
+    colour: str
+    span: float
+    offset: float
+
+    def __post_init__(self):
+        self.datapos = self.wcs.wcs_world2pix(self.position.ra, self.position.dec, 1)
+
+    def _get_xy_lims(self):
+        """Get x/y pixel coordinates of marker position."""
+        
+        x = self.datapos[0] - 1
+        y = self.datapos[1] - 1
+
+        return x, y
+
+    @property
+    def raline(self):
+        """Construct right ascension marker line."""
+
+        x, y = self._get_xy_lims()
+        raline = Line2D(
+            xdata=[x - self.offset, x - self.span],
+            ydata=[y, y],
+            color=self.colour,
+            linewidth=2,
+            path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
+        )
+
+        return raline
+        
+    @property
+    def decline(self):
+        """Construct declination marker line."""
+
+        x, y = self._get_xy_lims()
+        decline =  Line2D(
+            xdata=[x, x],
+            ydata=[y + self.offset, y + self.span],
+            color=self.colour,
+            linewidth=2,
+            path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
+        )
+
+        return decline
+
+    def in_pixel_range(self, pixmin: int, pixmax: int) -> bool:
+        """Check whether the pixel coordinate of marker is in a valid range."""
+        
+        if any(i < pixmin or i > pixmax or np.isnan(i) for i in self.datapos):
+            return False
+
+        return True
 
 
 class Cutout:
@@ -68,371 +127,112 @@ class Cutout:
         self.dec = self.position.dec.to_value(u.deg)
         self.size = size
         self.stokes = stokes
-        self.psf = kwargs.get('psf')
-        self.cmap = kwargs.get('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
-        self.band = kwargs.get('band', 'g')
+        self.sign = kwargs.pop('sign', 1)
+        self.cmap = kwargs.pop('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
+        self.correct_pm = kwargs.pop('pm', False)
         self.rotate_axes = False
 
-        self.kwargs = kwargs
+        self.options = kwargs
 
         try:
             self._get_cutout()
+            self._determine_epoch()
         except Exception as e:
             msg = f"{survey} failed: {e}"
             raise FITSException(msg)
-        finally:
-            if not any(c in self.survey for c in ['racs', 'vast', 'swagx']):
-                self.plot_source = False
-                self.plot_neighbours = False
 
     def __repr__(self):
-        return f"Cutout({self.survey}, ra={self.ra:.2f}, dec={self.dec:.2f})"
+        template = "Cutout('{}', SkyCoord(ra={:.4f}, dec=dec{:.4f}, unit='deg'), size={:.4f})"
+        return template.format(self.survey, self.ra, self.dec, self.size)
+
+    def __getattr__(self, name):
+        """Overload __getattr__ to make CutoutService attributes accessible directly from Cutout."""
+
+        try:
+            return getattr(self._cutout, name)
+        except (RecursionError, AttributeError):
+            raise AttributeError(f"{self.__class__.__name__} object has no attribute {name}")
+
+    @property
+    def normalisable(self):
+        """Property that is True if data can be colourmap normalised."""
+
+        return self.survey != 'swift_xrtcnt'
+
+    def _check_data_valid(self):
+        """Run checks for invalid or missing data (e.g. all NaN or 0 pixels) from valid FITS file."""
+
+        is_valid = (sum(~np.isnan(self.data).flatten()) > 0 and self.data.flatten().sum() != 0)
+        if not is_valid:
+            raise FITSException(f"No data in {self.survey}")
 
     def _get_cutout(self):
 
-        if self.kwargs.get('data'):
-            c = self.kwargs.get('data')
-            self.mjd = c.mjd
-            self.data = c.data
-            self.wcs = c.wcs
-            self.header = c.header
-            self.position = c.position
+        # # This was used to pass in a data array from another cutout, which is useful when
+        # # shifting the image data to a proper motion corrected location. Refactor this to
+        # # de-clutter this function
 
-            return
+        # if self.options.get('data'):
+        #     c = self.options.get('data')
+        #     self.mjd = c.mjd
+        #     self.data = c.data
+        #     self.wcs = c.wcs
+        #     self.header = c.header
+        #     self.position = c.position
 
-        if not os.path.exists(cutout_cache / self.survey):
-            msg = f"{cutout_cache}{self.survey} cutout directory does not exist, creating."
-            logger.info(msg)
-            os.makedirs(cutout_cache / self.survey)
+        #     return
 
         if os.path.isfile(self.survey):
-            self._get_local_cutout()
-        elif any(c in self.survey for c in ['racs', 'vast', 'vlass', 'gw', 'swagx']):
-            self._get_local_cutout()
+            self._cutout = RawCutout(self)
+        elif SURVEYS.loc[self.survey].local:
+            self._cutout = LocalCutout(self)
         elif self.survey == 'skymapper':
-            self._get_skymapper_cutout()
+            self._cutout = SkymapperCutout(self)
         elif self.survey == 'panstarrs':
-            self._get_panstarrs_cutout()
+            self._cutout = PanSTARRSCutout(self)
         elif self.survey == 'decam':
-            self._get_decam_cutout()
+            self._cutout = DECamCutout(self)
         elif self.survey == 'iphas':
-            self._get_iphas_cutout()
+            self._cutout = IPHASCutout(self)
         elif self.survey == 'mwats':
-            self._get_mwats_cutout()
+            self._cutout = MWATSCutout(self)
         else:
-            self._get_skyview_cutout()
+            self._cutout = SkyviewCutout(self)
 
-        return
+        self._cutout.fetch_sources(self)
 
-    def _get_source(self):
-        try:
-            selavy = SelavyCatalogue.from_params(
-                epoch=self.survey,
-                field=self.closest.field,
-                stokes=self.stokes
-            )
-            components = selavy.cone_search(self.position, 0.5 * self.size * u.deg)
-        except FileNotFoundError:
-            logger.warning(f"Selavy files not found for {self.survey} Stokes {self.stokes}, disabling source ellipses.")
-            self.plot_source = False
-            self.plot_neighbours = False
+        return                           
+    
+    def _determine_epoch(self):
+
+        epoch = self.options.pop('epoch', False)
+
+        fits_date_keys = [
+            'MJD-OBS',
+            'MJD',
+            'DATE-OBS',
+            'DATE',
+        ]
+
+        # Try each FITS header keyword in sequence if epoch not provided directly
+        if not epoch:
+            for key in fits_date_keys:
+                try:
+                    epoch = self.header[key]
+                    epochtype = 'mjd' if 'MJD' in key else None
+                    break
+                except KeyError:
+                    continue
+
+        # If epoch still not resolved, disable PM correction
+        if not epoch:
+            msg = f"Could not detect {self.survey} epoch, PM correction disabled."
+            logger.warning(msg)
+            self.correct_pm = False
 
             return
 
-        if components.empty:
-            self.plot_source = False
-            self.plot_neighbours = False
-            logger.warning('No nearby components found.')
-
-        if any(components.d2d < self.pos_err / 3600):
-            self.source = components.iloc[0]
-            self.neighbours = components.iloc[1:]
-            self.plot_source = True
-        else:
-            self.source = None
-            self.neighbours = components
-            self.plot_source = False
-
-        self.plot_neighbours = self.kwargs.get('neighbours', True)
-
-        logger.debug(f'Source: \n {self.source}')
-        # logger.debug(f'Coords: {components[np.argmin(d2d)].to_string(style="hmsdms")}')
-        if len(self.neighbours) > 0:
-            nn = self.neighbours.iloc[0]
-            logger.debug(f'Nearest neighbour components: \n {nn.ra_deg_cont, nn.dec_deg_cont}')
-            neighbour_view = self.neighbours[['ra_deg_cont', 'dec_deg_cont', 'maj_axis', 'min_axis',
-                                                'flux_peak', 'rms_image', 'd2d']]
-            logger.debug(f'Nearest 5 Neighbours \n {neighbour_view.head()}')
-
-    def _get_local_cutout(self):
-        """Fetch cutout data via local FITS images (e.g. RACS / VLASS)."""
-
-        fields = self._find_image()
-
-        if not len(fields) > 0:
-            raise FITSException(f"No fields located at {self.position.ra:.2f}, {self.position.dec:.2f}")
-
-        self.closest = fields.sort_values('dist_field_centre').iloc[0]
-        self.filepath = self.closest[f'{self.stokes}_path']
-
-        with fits.open(self.filepath) as hdul:
-            logger.debug(f"Making cutout from FITS image located at {self.filepath}")
-            header, data = hdul[0].header, hdul[0].data
-            wcs = WCS(header, naxis=2)
-            try:
-                self.mjd = Time(header['DATE-OBS']).mjd
-            except:
-                self.mjd = Time(header['DATE']).mjd
-
-            try:
-                cutout = Cutout2D(data[0, 0, :, :], self.position, self.size * u.deg, wcs=wcs)
-            except IndexError:
-                cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
-
-            self.data = cutout.data * 1000
-            self.wcs = cutout.wcs
-            self.header = self.wcs.to_header()
-
-            cdelt1, cdelt2 = proj_plane_pixel_scales(cutout.wcs)
-            self.header.remove("PC1_1", ignore_missing=True)
-            self.header.remove("PC2_2", ignore_missing=True)
-            self.header.update(
-                CDELT1=-cdelt1,
-                CDELT2=cdelt2,
-                BMAJ=header["BMAJ"],
-                BMIN=header["BMIN"],
-                BPA=header["BPA"]
-            )
-
-        if any(s in self.survey for s in ['racs', 'vast', 'swagx']):
-            self.pos_err = SURVEYS.loc[self.survey].pos_err
-            self._get_source()
-        else:
-            # Probably using vlass, yet to include aegean catalogs
-            self.plot_source = False
-            self.plot_neighbours = False
-
-    def _get_mwats_cutout(self):
-        mwats = pd.read_parquet('/import/ada1/jpri6587/data/mwats_raw.parq')
-        mwats = mwats[(mwats.ra > self.ra - 1) & (mwats.ra < self.ra + 1) &
-                      (mwats.dec > self.dec - 1) & (mwats.dec < self.dec + 1)]
-        assert len(mwats) > 0, "No MWATS sources in simple position filter. Check RA wrapping."
-
-        coords = SkyCoord(ra=mwats.ra, dec=mwats.dec, unit=u.deg)
-        mwats['d2d'] = coords.separation(self.position).arcsec
-
-        nearest = mwats.sort_values('d2d', ascending=True).iloc[0]
-        assert nearest.d2d < 15, "No MWATS sources within 15 arcsec."
-
-        self.filepath = '/import/extreme1/mebell/dockerized-pipeline/vast-pipeline/DATA/mwats/' + nearest.image
-
-        with fits.open(self.filepath) as hdul:
-            self.header, data = hdul[0].header, hdul[0].data
-            wcs = WCS(self.header, naxis=2)
-            self.mjd = Time(self.header['DATE-OBS']).mjd
-
-            try:
-                cutout = Cutout2D(data[0, 0, :, :], self.position, self.size * u.deg, wcs=wcs)
-            except IndexError:
-                cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
-            self.data = cutout.data * 1000
-            self.wcs = cutout.wcs
-
-    def _get_panstarrs_cutout(self):
-        """Fetch cutout data via PanSTARRS DR2 API."""
-        path = cutout_cache / 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(self.band,
-                                                                        '{:.4f}',
-                                                                        '{:.4f}',
-                                                                        '{:.4f}',)
-        imgpath = str(path).format(self.size * 60, self.ra, self.dec)
-        if not os.path.exists(imgpath):
-            pixelrad = int(self.size * 120 * 120)
-            service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
-            url = (f"{service}?ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits"
-                   f"&filters=grizy")
-            table = Table.read(url, format='ascii')
-
-            msg = f"No PS1 image at {self.position.ra:.2f}, {self.position.dec:.2f}"
-            assert len(table) > 0, msg
-
-            urlbase = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
-                       f"ra={self.ra}&dec={self.dec}&size={pixelrad}&format=fits&red=")
-
-            flist = ["yzirg".find(x) for x in table['filter']]
-            table = table[np.argsort(flist)]
-
-            for row in table:
-                filt = row['filter']
-                url = urlbase + row['filename']
-                path = cutout_cache / 'panstarrs/{}_{}arcmin_{}_{}.fits'.format(filt,
-                                                                                '{:.4f}',
-                                                                                '{:.4f}',
-                                                                                '{:.4f}',)
-                path = str(path).format(self.size * 60, self.ra, self.dec)
-
-                img = requests.get(url, allow_redirects=True)
-
-                if not os.path.exists(path):
-                    with open(path, 'wb') as f:
-                        f.write(img.content)
-
-        with fits.open(imgpath) as hdul:
-            self.header, self.data = hdul[0].header, hdul[0].data
-            self.wcs = WCS(self.header, naxis=2)
-            self.mjd = self.header['MJD-OBS']
-
-    def _get_iphas_cutout(self):
-        """Fetch cutout data via iPHAS API using Vizier query."""
-
-        path = cutout_cache / self.survey / 'dr2_{:.3f}arcmin_{:.3f}_{:.3f}.fits'
-
-        v = Vizier(columns=['_r', '_RAJ2000', '_DEJ2000', 'rDetectionID', '*'])
-        cat = SURVEYS.loc[self.survey]['vizier']
-
-        try:
-            table = v.query_region(self.position, radius=self.size * u.deg, catalog=cat)
-            table = table2df(table[0])
-            det_id = table.sort_values('_r').iloc[0]['rDetectionID']
-        except IndexError:
-            raise FITSException(
-                f"No iPHAS image at {self.position.ra:.2f}, {self.position.dec:.2f}")
-        run = det_id.split('-')[0]
-        ccd = det_id.split('-')[1]
-        link = f"http://www.iphas.org/data/images/r{run[:3]}/r{run}-{ccd}.fits.fz"
-
-        img = requests.get(link)
-        path = str(path).format(self.size * 60, self.ra, self.dec)
-
-        if not os.path.exists(path):
-            with open(path, 'wb') as f:
-                f.write(img.content)
-
-        with fits.open(path) as hdul:
-            self.header, data = hdul[1].header, hdul[1].data
-            wcs = WCS(self.header, naxis=2)
-            self.mjd = self.header['MJD-OBS']
-            cutout = Cutout2D(data, self.position, self.size * u.deg, wcs=wcs)
-            theta = np.arctan2(self.header['CD1_1'], self.header['CD1_2']) * 180 / np.pi
-
-            if abs(theta) - 90 > 45:
-                logger.warning("Image data seems to be rotated by 90 degrees.")
-                self.rotate_axes = True
-            self.data = cutout.data
-            self.wcs = cutout.wcs
-
-    def _get_skymapper_cutout(self):
-        """Fetch cutout data via Skymapper API."""
-
-        path = cutout_cache / self.survey / 'dr2{}_jd{:.4f}_{:.4f}arcmin_{:.4f}_{:.4f}.fits'
-        linka = 'http://api.skymapper.nci.org.au/aus/siap/dr2/'
-        linkb = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=CSV'
-        linkc = '&VERB=3&INTERSECT=covers'
-        sm_query = linka + linkb + linkc
-
-        link = linka + 'get_image?IMAGE={}&SIZE={}&POS={},{}&FORMAT=fits'
-
-        table = requests.get(sm_query.format(self.ra, self.dec, self.size))
-        df = pd.read_csv(io.StringIO(table.text))
-        impos = f'{self.position.ra:.2f}, {self.position.dec:.2f}'
-        assert len(df) > 0, f'No Skymapper image at {impos}'
-        assert 'Time-out' not in df.iloc[0], f'Skymapper Gateway Time-out for image at {impos}'
-
-        df = df[df.band == self.band]
-        self.mjd = df.iloc[0]['mjd_obs']
-        link = df.iloc[0].get_image
-
-        img = requests.get(link)
-
-        path = str(path).format(self.band, self.mjd, self.size * 60, self.ra, self.dec)
-
-        if not os.path.exists(path):
-            with open(path, 'wb') as f:
-                f.write(img.content)
-
-        with fits.open(path) as hdul:
-            self.header, self.data = hdul[0].header, hdul[0].data
-            self.wcs = WCS(self.header, naxis=2)
-
-    def _get_decam_cutout(self):
-        """Fetch cutout data via DECam LS API."""
-        size = int(self.size * 3600 / 0.262)
-        if size > 512:
-            size = 512
-            max_size = size * 0.262 / 3600
-            logger.warning(f"Using maximum DECam LS cutout size of {max_size:.3f} deg")
-
-        link = f"http://legacysurvey.org/viewer/fits-cutout?ra={self.ra}&dec={self.dec}"
-        link += f"&size={size}&layer=dr8&pixscale=0.262&bands={self.band}"
-        img = requests.get(link)
-
-        # Fix mjd issues!!
-        # This is currently a midpoint between the observing run
-        # as no obs-date information is available in the header
-        self.mjd = Time(2017.96, format='decimalyear').mjd
-
-        path = cutout_cache / self.survey / 'dr8_jd{:.4f}_{:.4f}arcmin_{:.4f}_{:.4f}_{}band.fits'
-        path = str(path).format(self.mjd, self.size * 60, self.ra, self.dec, self.band)
-        if not os.path.exists(path):
-            with open(path, 'wb') as f:
-                f.write(img.content)
-
-        try:
-            with fits.open(path) as hdul:
-                self.header, self.data = hdul[0].header, hdul[0].data
-                self.wcs = WCS(self.header, naxis=2)
-
-        except OSError:
-            msg = f"DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f} is corrupt"
-            raise FITSException(msg)
-
-        msg = f"No DECam LS image at {self.position.ra:.2f}, {self.position.dec:.2f}"
-        assert self.data is not None, msg
-
-    def _get_skyview_cutout(self):
-        """Fetch cutout data via SkyView API."""
-
-        sv = SkyView()
-        path = cutout_cache / self.survey / '{:.3f}arcmin_{:.3f}_{:.3f}.fits'
-        path = str(path).format(self.size * 60, self.ra, self.dec)
-        progress = self.kwargs.get('progress', False)
-
-        if not os.path.exists(path):
-            skyview_key = SURVEYS.loc[self.survey].skyview
-            try:
-                hdul = sv.get_images(position=self.position, survey=[skyview_key],
-                                     radius=self.size * u.deg, show_progress=progress)[0][0]
-            except IndexError:
-                raise FITSException('Skyview image list returned empty.')
-            except ValueError:
-                raise FITSException(f'{self.survey} is not a valid SkyView survey.')
-            except HTTPError:
-                raise FITSException('No response from Skyview server.')
-
-            with open(path, 'wb') as f:
-                hdul.writeto(f)
-
-        with fits.open(path) as hdul:
-            self.header, self.data = hdul[0].header, hdul[0].data
-            self.wcs = WCS(self.header, naxis=2)
-
-            try:
-                self.mjd = Time(self.header['DATE']).mjd
-            except KeyError:
-                try:
-                    self.epoch = self.kwargs.get('epoch')
-                    msg = "Could not detect epoch, PM correction disabled."
-                    assert self.epoch is not None, msg
-                    self.mjd = self.epoch if self.epoch > 3000 else Time(
-                        self.epoch, format='decimalyear').mjd
-                except AssertionError as e:
-                    if self.kwargs.get('pm'):
-                        logger.warning(e)
-                    self.mjd = None
-
-            self.data *= 1000
-
-    def _find_image(self):
-        return find_fields(self.position, self.survey)
+        self.mjd = Time(epoch, format=epochtype).mjd
 
     def _plot_setup(self, fig, ax):
         """Create figure and determine normalisation parameters."""
@@ -444,58 +244,59 @@ class Cutout:
             self.fig = plt.figure()
             self.ax = self.fig.add_subplot(111, projection=self.wcs)
 
-        if self.kwargs.get('grid', True):
+        # Set basic figure display options
+        if self.options.get('grid', True):
             self.ax.coords.grid(color='white', alpha=0.5)
 
-        if self.kwargs.get('title', True):
-            self.ax.set_title(SURVEYS.loc[self.survey]['name'],
-                              fontdict={'fontsize': 20, 'fontweight': 10})
+        if self.options.get('title', True):
+            title = self.options.get('title', SURVEYS.loc[self.survey]['name'])
+            self.ax.set_title(title, fontdict={'fontsize': 20, 'fontweight': 10})
 
-        if self.kwargs.get('compact', False):
+        self.set_xlabel('RA (J2000)')
+        self.set_ylabel('Dec (J2000)')
+
+        # Set compact or extended label / tick configuration
+        if self.options.get('compact', False):
             tickcolor = 'k' if np.nanmax(np.abs(self.data)) == np.nanmax(self.data) else 'gray'
-            self.ax.tick_params(axis='both', direction='in', length=5, color=tickcolor)
+
             lon = self.ax.coords[0]
             lat = self.ax.coords[1]
+
             lon.display_minor_ticks(True)
             lat.display_minor_ticks(True)
+
             lon.set_ticks(number=5)
             lat.set_ticks(number=5)
-            self.padlevel = self.kwargs.get('ylabelpad', 5)
 
+            self.ax.tick_params(axis='both', direction='in', length=5, color=tickcolor)
+            self.padlevel = self.options.get('ylabelpad', 5)
+
+        # Set colourmap normalisation
+        if self.options.get('vmax') or self.options.get('vmin'):
+            vmin = self.options.get('vmin', -2)
+            vmax = self.options.get('vmax', 1)
+            self.norm = ImageNormalize(
+                self.data,
+                interval=ZScaleInterval(),
+                vmin=vmin,
+                vmax=vmax,
+                clip=True
+            )
+        elif self.options.get('maxnorm'):
+            self.norm = ImageNormalize(
+                self.data,
+                interval=ZScaleInterval(),
+                vmax=np.nanmax(self.data),
+                clip=True
+            )
         else:
-            if self.rotate_axes:
-                lon, lat = self.ax.coords
-                lon.set_ticks_position('lb')
-                lon.set_ticklabel_position('lb')
-                lat.set_ticks_position('lb')
-                lat.set_ticklabel_position('lb')
+            contrast = self.options.get('contrast', 0.2)
+            self.norm = ImageNormalize(
+                self.data,
+                interval=ZScaleInterval(contrast=contrast),
+                clip=True
+            )
 
-                self.set_xlabel("Dec (J2000)")
-                self.set_ylabel("RA (J2000)")
-            else:
-                self.set_xlabel('RA (J2000)')
-                self.set_ylabel('Dec (J2000)')
-
-        if self.kwargs.get('obfuscate', False):
-            self.hide_coords()
-
-        if self.kwargs.get('annotation'):
-            color = 'white' if self.cmap == 'hot' else 'k'
-            self.ax.text(0.05, 0.85, self.kwargs.get('annotation'), color=color,
-                         weight='bold', transform=self.ax.transAxes)
-
-        if self.kwargs.get('vmax') or self.kwargs.get('vmin'):
-            vmin = self.kwargs.get('vmin', -2)
-            vmax = self.kwargs.get('vmax', 1)
-            self.norm = ImageNormalize(self.data, interval=ZScaleInterval(),
-                                       vmin=vmin, vmax=vmax, clip=True)
-        elif self.kwargs.get('maxnorm'):
-            self.norm = ImageNormalize(self.data, interval=ZScaleInterval(),
-                                       vmax=np.nanmax(self.data), clip=True)
-        else:
-            contrast = self.kwargs.get('contrast', 0.2)
-            self.norm = ImageNormalize(self.data, interval=ZScaleInterval(contrast=contrast),
-                                       clip=True)
 
     def _align_ylabel(self, ylabel):
         """Consistently offset y-axis label with varying coordinate label size."""
@@ -528,36 +329,100 @@ class Cutout:
 
         self.ax.set_ylabel(ylabel, labelpad=self.padlevel - zeropad)
 
-    def _add_cornermarker(self, ra, dec):
+    def add_annotation(self, annotation, location='upper left', **kwargs):
 
-        span = self.kwargs.get('corner_span', len(self.data) / 4)
-        offset = self.kwargs.get('corner_offset', len(self.data) / 8)
-        datapos = self.wcs.wcs_world2pix(ra, dec, 1)
+        props = {
+            'size': kwargs.get('size', 12),
+            'color': kwargs.get('color', 'firebrick'),
+            'alpha': kwargs.get('alpha', 0.7),
+            'weight': kwargs.get('weight', 'heavy'),
+            'family': 'sans-serif',
+            'usetex': False,
+        }
+        text = AnchoredText(annotation, loc=location, frameon=False, prop=props) 
 
-        if any(i < 0 or i > len(self.data) or np.isnan(i) for i in datapos):
-            if self.offsets:
-                datapos = self.wcs.wcs_world2pix(0, 0, 1)
-            else:
-                msga = "RA and Dec are outside of data range, and not in offsets mode. "
-                msgb = "Using pixel centre for cornermarker."
-                logger.warning(msga + msgb)
-                datapos = [len(self.data) / 2, len(self.data) / 2]
+        self.ax.add_artist(text)
 
-        x = datapos[0] - 1
-        y = datapos[1] - 1
+    def add_cornermarker(self, marker):
 
-        color = 'k' if self.cmap != 'gray_r' else 'r'
-        raline = Line2D(xdata=[x - offset, x - span],
-                        ydata=[y, y],
-                        color=color, linewidth=2,
-                        path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()])
-        decline = Line2D(xdata=[x, x],
-                         ydata=[y + offset, y + span],
-                         color=color, linewidth=2,
-                         path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()])
+        if not marker.in_pixel_range(0, len(self.data)):
+            msga = "Cornermarker will be disabled as RA and Dec are outside of data range."
+            logger.warning(msga + msgb)
 
-        self.ax.add_artist(raline)
-        self.ax.add_artist(decline)
+            return
+
+        self.ax.add_artist(marker.raline)
+        self.ax.add_artist(marker.decline)
+
+    def add_source_ellipse(self):
+        """Overplot dashed line ellipses for the nearest source within positional uncertainty."""
+
+        # Add ellipse for source within positional uncertainty
+        if self.plot_source:
+            source_colour = 'springgreen' if self.stokes == 'v' else 'springgreen'
+            self.sourcepos = Ellipse((self.source.ra_deg_cont,
+                                      self.source.dec_deg_cont),
+                                     self.source.min_axis / 3600,
+                                     self.source.maj_axis / 3600,
+                                     -self.source.pos_ang,
+                                     facecolor='none', edgecolor=source_colour,
+                                     ls=':', lw=2,
+                                     transform=self.ax.get_transform('world'))
+            self.ax.add_patch(self.sourcepos)
+            
+        # Add ellipse for other components in the FoV
+        if self.plot_neighbours:
+            neighbour_colour = 'darkviolet' if self.stokes == 'v' else 'darkviolet'
+            for idx, neighbour in self.neighbours.iterrows():
+                n = Ellipse((neighbour.ra_deg_cont,
+                             neighbour.dec_deg_cont),
+                            neighbour.min_axis / 3600,
+                            neighbour.maj_axis / 3600,
+                            -neighbour.pos_ang,
+                            facecolor='none', edgecolor=neighbour_colour, ls=':', lw=2,
+                            transform=self.ax.get_transform('world'))
+                self.ax.add_patch(n)
+        
+    def add_psf(self):
+
+        try:
+            self.bmaj = self.header['BMAJ'] * 3600
+            self.bmin = self.header['BMIN'] * 3600
+            self.bpa = self.header['BPA']
+        except KeyError:
+            logger.warning('Header did not contain PSF information, disabling PSF marker.')
+            return
+
+        try:
+            cdelt = self.header['CDELT1']
+        except KeyError:
+            cdelt = self.header['CD1_1']
+
+        if self.options.get('beamsquare'):
+            frame = True
+            facecolor = 'k'
+            edgecolor = 'k'
+        else:
+            frame = False
+            facecolor = 'white'
+            edgecolor = 'k'
+
+        x = self.bmin / abs(cdelt) / 3600
+        y = self.bmaj / abs(cdelt) / 3600
+
+        self.beam = AnchoredEllipse(
+            self.ax.transData,
+            width=x,
+            height=y,
+            angle=self.bpa,
+            loc=3,
+            pad=0.5,
+            borderpad=0.4,
+            frameon=frame
+        )
+        self.beam.ellipse.set(facecolor=facecolor, edgecolor=edgecolor)
+
+        self.ax.add_artist(self.beam)
 
     def switch_to_offsets(self):
         """Transform WCS to a frame centred on the image."""
@@ -609,7 +474,6 @@ class Cutout:
     def plot(self, fig=None, ax=None):
         """Plot survey data and position overlay."""
 
-        self.sign = self.kwargs.get('sign', 1)
         self._plot_setup(fig, ax)
         self.data *= self.sign
 
@@ -627,97 +491,16 @@ class Cutout:
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
-        if self.kwargs.get('bar', True):
+        if self.options.get('bar', True):
             try:
                 self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
             except UnboundLocalError:
                 logger.error("Colorbar failed. Upgrade to recent version of astropy ")
 
-        if self.psf:
-            try:
-                self.bmaj = self.header['BMAJ'] * 3600
-                self.bmin = self.header['BMIN'] * 3600
-                self.bpa = self.header['BPA']
-            except KeyError:
-                logger.warning('Header did not contain PSF information.')
-                try:
-                    self.bmaj = self.psf[0]
-                    self.bmin = self.psf[1]
-                    self.bpa = 0
-                    logger.warning('Using supplied BMAJ/BMIN. Assuming BPA=0')
-                except ValueError:
-                    logger.error('No PSF information supplied.')
+        if self.options.get('psf'):
+            self.add_psf()
 
-            try:
-                cdelt = self.header['CDELT1']
-            except KeyError:
-                cdelt = self.header['CD1_1']
-
-            if self.kwargs.get('beamsquare'):
-                frame = True
-                facecolor = 'k'
-                edgecolor = 'k'
-            else:
-                frame = False
-                facecolor = 'white'
-                edgecolor = 'k'
-            x = self.bmin / abs(cdelt) / 3600
-            y = self.bmaj / abs(cdelt) / 3600
-            self.beam = AnchoredEllipse(self.ax.transData, width=x, height=y,
-                                        angle=self.bpa, loc=3, pad=0.5, borderpad=0.4,
-                                        frameon=frame)
-            self.beam.ellipse.set(facecolor=facecolor, edgecolor=edgecolor)
-            self.ax.add_artist(self.beam)
-
-        if self.kwargs.get('source', True):
-            if self.plot_source:
-                if self.kwargs.get('corner'):
-                        self._add_cornermarker(self.source.ra_deg_cont, self.source.dec_deg_cont)
-                else:
-                    self.sourcepos = Ellipse((self.source.ra_deg_cont,
-                                              self.source.dec_deg_cont),
-                                             self.source.min_axis / 3600,
-                                             self.source.maj_axis / 3600,
-                                             -self.source.pos_ang,
-                                             facecolor='none', edgecolor='r',
-                                             ls=':', lw=2,
-                                             transform=self.ax.get_transform('world'))
-                    self.ax.add_patch(self.sourcepos)
-
-        else:
-            if self.kwargs.get('corner'):
-                    self._add_cornermarker(self.ra, self.dec)
-            else:
-                self.bmin = 15
-                self.bmaj = 15
-                self.bpa = 0
-                overlay = SphericalCircle((self.ra * u.deg, self.dec * u.deg),
-                                          self.bmaj * u.arcsec,
-                                          edgecolor='r',
-                                          linewidth=2,
-                                          facecolor='none',
-                                          transform=self.ax.get_transform('world'))
-                self.ax.add_artist(overlay)
-        if self.plot_source:
-            self.sourcepos = Ellipse((self.source.ra_deg_cont,
-                                      self.source.dec_deg_cont),
-                                     self.source.min_axis / 3600,
-                                     self.source.maj_axis / 3600,
-                                     -self.source.pos_ang,
-                                     facecolor='none', edgecolor='r',
-                                     ls=':', lw=2,
-                                     transform=self.ax.get_transform('world'))
-            self.ax.add_patch(self.sourcepos)
-        if self.plot_neighbours:
-            for idx, neighbour in self.neighbours.iterrows():
-                n = Ellipse((neighbour.ra_deg_cont,
-                             neighbour.dec_deg_cont),
-                            neighbour.min_axis / 3600,
-                            neighbour.maj_axis / 3600,
-                            -neighbour.pos_ang,
-                            facecolor='none', edgecolor='c', ls=':', lw=2,
-                            transform=self.ax.get_transform('world'))
-                self.ax.add_patch(n)
+        self.add_source_ellipse()
 
     def save(self, path, fmt='png'):
         """Save figure with tight bounding box."""
@@ -727,7 +510,8 @@ class Cutout:
         """Save FITS cutout."""
         
         header = self.wcs.to_header()
-        hdu = fits.PrimaryHDU(data=self.data, header=header)
+        header['BUNIT'] = 'Jy/beam'
+        hdu = fits.PrimaryHDU(data=self.data / 1e3, header=header)
         hdu.writeto(path)
 
     def set_xlabel(self, xlabel):
@@ -744,42 +528,74 @@ class ContourCutout(Cutout):
 
     def __init__(self, survey, position, size, **kwargs):
 
-        self.contours = kwargs.get('contours', 'racs-low')
-        self.clabels = kwargs.get('clabels', False)
-        self.bar = kwargs.get('bar', False)
-        try:
-            data = kwargs.pop('data')
-        except KeyError:
-            data = None
-        self.radio = Cutout(self.contours, position, size, **kwargs)
-        self.cmjd = self.radio.mjd
+        # If custom data provided for ContourCutout, pop from kwargs
+        # to avoid being read as radio data by Cutout sub-call.
+        data = kwargs.pop('data', None)
 
-        self.correct_pm = kwargs.get('pm')
+        # Other ContourCutout specific keywords are also popped
+        self.contours = kwargs.pop('contours', 'racs-low')
+        self.clabels = kwargs.pop('clabels', False)
+        self.bar = kwargs.pop('bar', False)
+        self.band = kwargs.pop('band', 'g')
+
+        self.radio = Cutout(self.contours, position, size, **kwargs)
+        self.radio.mjd = self.radio.mjd
+
         super().__init__(survey, position, size, data=data, **kwargs)
 
         if self.correct_pm:
-            self._correct_proper_motion()
+            self.correct_proper_motion()
 
-        # Ensure contour array shape is not larger than base array shape
-        if self.data.shape[0] < self.radio.data.shape[0]:
-            logger.warning(
-                "Contour data array larger than base, resizing to avoid extra whitespace.")
-            logger.error("This is currently broken, contours not displaying.")
-            # self.radio.data = reproject_interp((self.radio.data, self.radio.wcs), self.wcs,
-            #                                    shape_out=self.data.shape, return_footprint=False)
+    def _add_pm_location(self):
+        """Overplot proper motion correction as an arrow."""
+
+        name = self.simbad.iloc[0]["Object"]
+        oldcoord = SkyCoord(self.oldpos.ra, self.oldpos.dec, unit=u.deg)
+        newcoord = SkyCoord(self.pm_coord.ra, self.pm_coord.dec, unit=u.deg)
+        oldtime = Time(self.mjd, format='mjd').decimalyear
+        newtime = Time(self.radio.mjd, format='mjd').decimalyear
+        handles, labels = [], []
+
+        if oldcoord.separation(newcoord).arcsec < 1:
+            self.ax.scatter(self.pm_coord.ra, self.pm_coord.dec, marker='x', s=200, color='r',
+                            transform=self.ax.get_transform('world'),
+                                label=f'{name} position at J{newtime:.2f}')
+            self.ax.scatter(self.oldpos.ra, self.oldpos.dec, marker='x', s=200, color='b',
+                            transform=self.ax.get_transform('world'),
+                            label=f'{name} position at J{oldtime:.2f}')
+            self.ax.legend()
+        else:
+            dra, ddec = oldcoord.spherical_offsets_to(newcoord)
+            self.ax.arrow(
+                self.oldpos.ra.deg,
+                self.oldpos.dec.deg,
+                dra.deg,
+                ddec.deg,
+                width=8e-5,
+                color='r',
+                length_includes_head=True,
+                zorder=10,
+                transform=self.ax.get_transform('world')
+            )
+
+            arrow_handle = Line2D([], [], ls='none', marker=r'$\leftarrow$', markersize=10, color='r')
+            arrow_label = f'Proper motion from J{oldtime:.2f}-J{newtime:.2f}'
+            handles.append(arrow_handle)
+            labels.append(arrow_label)
+
+            self.ax.legend(handles, labels)
 
     def align_image_to_contours(self):
         if not self.correct_pm:
-            self._correct_proper_motion()
+            self.correct_proper_motion()
             self.correct_pm = False
 
         try:
             pmra = self.oldpos.pm_ra
         except AttributeError as e:
             pmra = self.oldpos.pm_ra_cosdec
-            logger.error(e)
-            logger.error("Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec")
-
+            logger.warning(e)
+            logger.warning("Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec")
 
         orig_pos = SkyCoord(
             ra=self.wcs.wcs.crval[0] * u.deg,
@@ -788,182 +604,143 @@ class ContourCutout(Cutout):
             distance=self.oldpos.distance,
             pm_ra_cosdec=pmra,
             pm_dec=self.oldpos.pm_dec,
-            obstime=Time(self.mjd, format='mjd'))
-        newpos = orig_pos.apply_space_motion(Time(self.cmjd, format='mjd'))
+            obstime=Time(self.mjd, format='mjd')
+        )
+        newpos = orig_pos.apply_space_motion(Time(self.radio.mjd, format='mjd'))
+
         self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
 
-    def _correct_proper_motion(self, invert=False):
-        """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates"""
+    def correct_proper_motion(self, invert=False):
+        """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates."""
+
+        # If mjd not set directly, check that it was set from FITS headers in get_cutout method
+        if self.mjd is None:
+            raise FITSException("Date could not be inferred from header, supply with epoch keyword.")
+
+        obstime = Time(self.mjd, format='mjd')
 
         simbad = Simbad.query_region(self.position, radius=180 * u.arcsec)
-        if self.kwargs.get('epoch'):
-            self.epoch = self.kwargs.get('epoch', self.mjd)
-        self.epochtype = 'MJD' if self.epoch > 3e3 else 'decimalyear'
-        self.mjd = Time(self.epoch, format=self.epochtype.lower()).mjd
 
-        assert self.mjd is not None, "Date could not be inferred from header, supply with --epoch."
-
-        if simbad is not None:
-            simbad = table2df(simbad)
+        # Catch SIMBAD failure either from None return of query or no stellar type matches in region
+        try:
+            simbad = simbad.to_pandas()
             pm_types = ['*', '**', 'PM*', 'EB*', 'Star', 'PSR', 'Pulsar', 'Flare*']
             simbad = simbad[(simbad['OTYPE'].isin(pm_types)) | (simbad['SP_TYPE'].str.len() > 0)]
 
-            if len(simbad) == 0:
-                logger.warning("No high proper-motion objects within 180 arcsec.")
-                self.correct_pm = False
-                self.pm_coord = SkyCoord(
-                    ra=self.position.ra,
-                    dec=self.position.dec,
-                    frame='icrs',
-                    distance=Distance(parallax=1000000 * u.mas),
-                    pm_ra_cosdec=0 * u.mas / u.yr,
-                    pm_dec=0 * u.mas / u.yr,
-                    obstime='J2000')
-                self.oldpos = self.pm_coord
+            assert len(simbad) > 0
 
-                return
-
-            # Treat non-existant proper motion parameters as extremely distance objects
-            simbad['PMRA'].fillna(0, inplace=True)
-            simbad['PMDEC'].fillna(0, inplace=True)
-            simbad['PLX_VALUE'].fillna(1000000, inplace=True)
-
-            obstime = 'J2000'
-            proptime = Time(self.cmjd, format='mjd')
-            pmra = simbad['PMRA'].values * u.mas / u.yr
-            pmdec = simbad['PMDEC'].values * u.mas / u.yr
-
-            dist = Distance(parallax=simbad['PLX_VALUE'].values * u.mas)
-
-            simbad['j2000pos'] = SkyCoord(
-                ra=simbad['RA_d'].values * u.deg,
-                dec=simbad['DEC_d'].values * u.deg,
-                frame='icrs',
-                distance=dist,
-                pm_ra_cosdec=pmra,
-                pm_dec=pmdec,
-                obstime=obstime)
-
-            datapos = simbad.j2000pos.apply(
-                lambda x: x.apply_space_motion(Time(self.mjd, format='mjd')))
-            newpos = simbad.j2000pos.apply(
-                lambda x: x.apply_space_motion(proptime))
-
-            simbad['PM Corrected Separation (arcsec)'] = np.round(newpos.apply(
-                lambda x: x.separation(self.position).arcsec), 3)
-            simbad = simbad[['MAIN_ID', 'OTYPE', 'SP_TYPE', 'DISTANCE_RESULT',
-                             'PM Corrected Separation (arcsec)']].copy()
-            simbad = simbad.rename(columns={'MAIN_ID': 'Object', 'OTYPE': 'Type',
-                                            'DISTANCE_RESULT': 'Separation (arcsec)',
-                                            'SP_TYPE': 'Spectral Type'})
-
-            logger.info(f'SIMBAD results:\n {simbad}')
-            self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)').head()
-
-            nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
-                
-            self.oldpos = datapos[nearest]
-            self.pm_coord = newpos[nearest]
-
-            near_object = self.simbad.loc[nearest].Object
-            msg = f'Proper motion corrected {near_object} to <{self.pm_coord.ra}, {self.pm_coord.dec}>'
-            logger.info(msg)
-
-            missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
-            if self.simbad['PM Corrected Separation (arcsec)'].min() > 15:
-                logger.warning("No PM corrected objects within 15 arcsec")
-                self.correct_pm = False
-            if len(missing) > 0:
-                msg = f"Some objects missing PM data, and may be closer matches \n {missing}"
-                logger.warning(msg)
-
-        else:
+        except (ValueError, AssertionError):
+            logger.warning("No high proper-motion objects within 180 arcsec.")
             self.correct_pm = False
-            self.pm_coord = SkyCoord(
-                    ra=self.position.ra,
-                    dec=self.position.dec,
-                    frame='icrs',
-                    distance=Distance(parallax=1000000 * u.mas),
-                    pm_ra_cosdec=0 * u.mas / u.yr,
-                    pm_dec=0 * u.mas / u.yr,
-                    obstime='J2000')
-            self.oldpos = self.pm_coord
+
+            return
+
+        # Treat non-existent proper motion parameters as extremely distant objects
+        simbad['PMRA'].fillna(0, inplace=True)
+        simbad['PMDEC'].fillna(0, inplace=True)
+        simbad['PLX_VALUE'].fillna(0.01, inplace=True)
+
+        newtime = Time(self.radio.mjd, format='mjd')
+        pmra = simbad['PMRA'].values * u.mas / u.yr
+        pmdec = simbad['PMDEC'].values * u.mas / u.yr
+
+        dist = Distance(parallax=simbad['PLX_VALUE'].values * u.mas)
+
+        simbad['j2000pos'] = SkyCoord(
+            ra=simbad['RA_d'].values * u.deg,
+            dec=simbad['DEC_d'].values * u.deg,
+            frame='icrs',
+            distance=dist,
+            pm_ra_cosdec=pmra,
+            pm_dec=pmdec,
+            obstime='J2000',
+        )
+
+        datapos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(obstime))
+        newpos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(newtime))
+
+        simbad_cols = {
+            'MAIN_ID': 'Object',
+            'OTYPE': 'Type',
+            'SP_TYPE': 'Spectral Type',
+            'DISTANCE_RESULT': 'Separation (arcsec)',
+        }
+        simbad = simbad.rename(columns=simbad_cols)
+        simbad = simbad[simbad_cols.values()].copy()
+        simbad['PM Corrected Separation (arcsec)'] = np.round(newpos.apply(
+            lambda x: x.separation(self.position).arcsec), 3)
+
+        # Only display PM results if object within 15 arcsec
+        if simbad['PM Corrected Separation (arcsec)'].min() > 15:
+            logger.warning("No PM corrected objects within 15 arcsec")
+            self.correct_pm = False
+
+            return
+
+        self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)')
+        logger.info(f'SIMBAD results:\n {self.simbad.head()}')
+
+        nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
+
+        self.oldpos = datapos[nearest]
+        self.pm_coord = newpos[nearest]
+
+        near_object = self.simbad.loc[nearest].Object
+        msg = f'{near_object} proper motion corrected to <{self.pm_coord.ra:.4f}, {self.pm_coord.dec:.4f}>'
+        logger.info(msg)
+
+        missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
+        if len(missing) > 0:
+            msg = f"Some objects missing PM data, and may be a closer match than presented:\n {missing}"
+            logger.warning(msg)
+
+        return
 
     def plot(self, fig=None, ax=None):
-        self.sign = self.kwargs.get('sign', 1)
         self._plot_setup(fig, ax)
 
-        assert (sum((~np.isnan(self.data).flatten())) > 0 and sum(self.data.flatten()) != 0), \
-            f"No data in {self.survey}"
+        self._check_data_valid()
 
-        if self.survey == 'swift_xrtcnt':
+        if not self.normalisable:
             self.im = self.ax.imshow(self.data, cmap=self.cmap)
         else:
             self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
-
-        if self.kwargs.get('bar', False):
-            try:
-                self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
-            except UnboundLocalError:
-                logger.error("Colorbar failed. Upgrade to recent version of astropy ")
 
         # Plot radio contours
         self.radio.data *= self.sign
         self.peak = np.nanmax(self.radio.data)
         self.radiorms = np.sqrt(np.mean(np.square(self.radio.data)))
 
-        if self.kwargs.get('rmslevels'):
+        if self.options.get('rmslevels'):
             self.levels = [self.radiorms * x for x in [3, 6]]
-        elif self.kwargs.get('peaklevels'):
+        elif self.options.get('peaklevels'):
             midx = int(self.radio.data.shape[0] / 2)
             midy = int(self.radio.data.shape[1] / 2)
             peak = self.radio.data[midx, midy]
-            # self.levels = [peak * x for x in [.35, .6, .85]]
             self.levels = np.logspace(np.log10(0.3 * peak), np.log10(0.9 * peak), 3)
         else:
             self.levels = [self.peak * x for x in [.3, .6, .9]]
 
-        contourwidth = self.kwargs.get('contourwidth', 3)
-        color = 'blue' if self.cmap == 'hot' else 'orange'
+        contour_width = self.options.get('contourwidth', 3)
+        contour_color = 'k' if self.cmap == 'coolwarm' else 'orange'
 
-        self.cs = self.ax.contour(self.radio.data,
-                                  transform=self.ax.get_transform(self.radio.wcs),
-                                  levels=self.levels, colors=color,
-                                  linewidths=contourwidth)
+        self.cs = self.ax.contour(
+            self.radio.data,
+            transform=self.ax.get_transform(self.radio.wcs),
+            levels=self.levels,
+            colors=contour_color,
+            linewidths=contour_width,
+        )
+
         if self.clabels:
             self.ax.clabel(self.cs, fontsize=10, fmt='%1.1f mJy')
+
         if self.bar:
             self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
 
-        if self.survey == 'panstarrs' and self.kwargs.get('title', True):
+        if self.survey == 'panstarrs' and self.options.get('title', True):
             self.ax.set_title(f"{SURVEYS.loc[self.survey]['name']} ({self.band}-band)")
 
-        # Plot PM corrected location
         if self.correct_pm:
-            name = self.simbad.iloc[0]["Object"]
-            oldcoord = SkyCoord(self.oldpos.ra, self.oldpos.dec, unit=u.deg)
-            newcoord = SkyCoord(self.pm_coord.ra, self.pm_coord.dec, unit=u.deg)
-            oldtime = Time(self.mjd, format='mjd').decimalyear
-            newtime = Time(self.cmjd, format='mjd').decimalyear
-            handles, labels = [], []
-
-            if oldcoord.separation(newcoord).arcsec < 1:
-                self.ax.scatter(self.pm_coord.ra, self.pm_coord.dec, marker='x', s=200, color='r',
-                                transform=self.ax.get_transform('world'),
-                                    label=f'{name} position at J{newtime:.2f}')
-                self.ax.scatter(self.oldpos.ra, self.oldpos.dec, marker='x', s=200, color='b',
-                                transform=self.ax.get_transform('world'),
-                                label=f'{name} position at J{oldtime:.2f}')
-                self.ax.legend()
-            else:
-                dra, ddec = oldcoord.spherical_offsets_to(newcoord)
-                arr_label = f'Proper motion from J{oldtime:.2f}-J{newtime:.2f}'
-                self.ax.arrow(self.oldpos.ra.deg, self.oldpos.dec.deg, dra.deg, ddec.deg,
-                              width=8e-5, color='r', length_includes_head=True,
-                              transform=self.ax.get_transform('world'))
-
-                handles.append(Line2D([], [], ls='none',
-                                      marker=r'$\leftarrow$', markersize=10, color='r'))
-                labels.append(arr_label)
-
-                self.ax.legend(handles, labels)
+            self._add_pm_location()
+            
