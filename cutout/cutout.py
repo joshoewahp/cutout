@@ -475,19 +475,16 @@ class Cutout:
         """Plot survey data and position overlay."""
 
         self._plot_setup(fig, ax)
-        self.data *= self.sign
+
+        if self.stokes == 'v':
+            self.data *= self.sign
+            self.cmap = plt.cm.coolwarm
 
         absmax = max(self.data.max(), self.data.min(), key=abs)
         rms = np.sqrt(np.mean(np.square(self.data)))
 
         logger.debug(f"Max flux in cutout: {absmax:.2f} mJy.")
         logger.debug(f"RMS flux in cutout: {rms:.2f} mJy.")
-
-        assert (sum((~np.isnan(self.data).flatten())) > 0 and
-                sum(self.data.flatten()) != 0), f"No data in {self.survey}"
-
-        if self.stokes == 'v':
-            self.cmap = plt.cm.coolwarm
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
