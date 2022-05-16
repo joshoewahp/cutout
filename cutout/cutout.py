@@ -157,7 +157,7 @@ class Cutout:
     def normalisable(self):
         """Property that is True if data can be colourmap normalised."""
 
-        return self.survey != 'swift_xrtcnt'
+        return np.abs(np.nansum(self.data)) > 0
 
     def _check_data_valid(self):
         """Run checks for invalid or missing data (e.g. all NaN or 0 pixels) from valid FITS file."""
@@ -272,30 +272,53 @@ class Cutout:
             self.padlevel = self.options.get('ylabelpad', 5)
 
         # Set colourmap normalisation
-        if self.options.get('vmax') or self.options.get('vmin'):
+        self.norm = self._get_cmap_normalisation()
+        
+       
+    def _get_cmap_normalisation(self):
+        """Create colourmap normalisation for cutout map.
+        
+        User supplied parameters take precedence in order of:
+        --maxnorm
+        --vmin and/or --vmax
+        
+        or by default ZScaleInterval computes low-contrast limits which
+        are made symmetric for Stokes V cutouts.
+        """
+
+        # Non-normalisable data should return cmap = None
+        if not self.normalisable:
+            return
+
+        # Get min/max based upon ZScale with contrast parameter
+        contrast = self.options.get('contrast', 0.2)
+        vmin, vmax = ZScaleInterval(contrast=contrast).get_limits(self.data)
+
+        # Make this symmetric if using Stokes V
+        if self.stokes == 'v':
+            v = max(abs(vmin), abs(vmax))
+            vmin = -v
+            vmax = v
+
+        # Override with user-supplied values if present
+        if self.options.get('vmin') or self.options.get('vmax'):
             vmin = self.options.get('vmin', -2)
             vmax = self.options.get('vmax', 1)
-            self.norm = ImageNormalize(
-                self.data,
-                interval=ZScaleInterval(),
-                vmin=vmin,
-                vmax=vmax,
-                clip=True
-            )
-        elif self.options.get('maxnorm'):
-            self.norm = ImageNormalize(
-                self.data,
-                interval=ZScaleInterval(),
-                vmax=np.nanmax(self.data),
-                clip=True
-            )
-        else:
-            contrast = self.options.get('contrast', 0.2)
-            self.norm = ImageNormalize(
-                self.data,
-                interval=ZScaleInterval(contrast=contrast),
-                clip=True
-            )
+
+        # Normalise with maximum value in data
+        if self.options.get('maxnorm'):
+            vmax = np.nanmax(self.data)
+            vmin = None
+
+        norm = ImageNormalize(
+            self.data,
+            interval=ZScaleInterval(),
+            vmin=vmin,
+            vmax=vmax,
+            clip=True
+        )
+
+        return norm
 
 
     def _align_ylabel(self, ylabel):
@@ -477,7 +500,6 @@ class Cutout:
         self._plot_setup(fig, ax)
 
         if self.stokes == 'v':
-            self.data *= self.sign
             self.cmap = plt.cm.coolwarm
 
         absmax = max(self.data.max(), self.data.min(), key=abs)
@@ -698,10 +720,7 @@ class ContourCutout(Cutout):
 
         self._check_data_valid()
 
-        if not self.normalisable:
-            self.im = self.ax.imshow(self.data, cmap=self.cmap)
-        else:
-            self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
+        self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
         # Plot radio contours
         self.radio.data *= self.sign
