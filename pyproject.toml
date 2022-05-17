@@ -11,8 +11,8 @@ matplotlib = "^3.5.1"
 astropy = "^5.0.1"
 astroquery = "^0.4.5"
 pandas = "^1.4.1"
-astroutils = {git = "https://github.com/joshoewahp/astroutils.git", rev = "main"}
 click = "^8.0.4"
+astroutils = {git = "https://github.com/joshoewahp/astroutils.git", rev = "main"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.1"
