@@ -41,6 +41,7 @@ class CutoutService(ABC):
     def __init__(self, cutout):
         self.plot_source = False
         self.plot_neighbours = False
+        self.hdulindex = 0
 
         self.fetch_data(cutout)
         self.fetch_sources(cutout)
@@ -112,8 +113,7 @@ class CutoutService(ABC):
         with fits.open(self.filepath) as hdul:
             logger.debug(f"Making cutout from FITS image located at:\n{self.filepath}")
 
-            hdulindex = 1 if cutout.survey == 'iphas' else 0
-            header, data = hdul[hdulindex].header, hdul[hdulindex].data
+            header, data = hdul[self.hdulindex].header, hdul[self.hdulindex].data
             wcs = WCS(header, naxis=2)
 
         try:
@@ -134,6 +134,7 @@ class RawCutout(CutoutService):
 
     def fetch_data(self, cutout):
         self.filepath = cutout.survey
+        self.hdulindex = 1
 
     def fetch_sources(self, cutout):
         return
@@ -277,18 +278,21 @@ class IPHASCutout(CutoutService):
     def fetch_data(self, cutout):
 
         self._set_cache_path(cutout)
+        self.hdulindex = 1
         
         # Query Vizier for observations at position
         v = Vizier(columns=['_r', '_RAJ2000', '_DEJ2000', 'rDetectionID', 'fieldGrade', '*'])
         cat = SURVEYS.loc[cutout.survey]['vizier']
 
         table = v.query_region(cutout.position, radius=cutout.size, catalog=cat)
-        table = table[0].to_pandas().sort_values('_r')
 
         # Check that iPHaS image exists at position
+        exc = FITSException(f"No IPHAS image at {cutout.position.ra:.2f}, {cutout.position.dec:.2f}")
+        if len(table) == 0:
+            raise exc
+        table = table[0].to_pandas().sort_values('_r')
         if table.empty:
-            raise FITSException(
-                f"No IPHAS image at {cutout.position.ra:.2f}, {cutout.position.dec:.2f}")
+            raise exc
 
         # Remove poor quality observations
         table = table[(table.rDetectionID != '') & (table.fieldGrade != 'D')]
