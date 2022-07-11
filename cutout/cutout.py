@@ -89,6 +89,7 @@ class CornerMarker:
             ydata=[y, y],
             color=self.colour,
             linewidth=2,
+            zorder=10,
             path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
         )
 
@@ -104,6 +105,7 @@ class CornerMarker:
             ydata=[y + self.offset, y + self.span],
             color=self.colour,
             linewidth=2,
+            zorder=10,
             path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
         )
 
@@ -184,20 +186,24 @@ class Cutout:
 
         if os.path.isfile(self.survey):
             self._cutout = RawCutout(self)
-        elif SURVEYS.loc[self.survey].local:
-            self._cutout = LocalCutout(self)
-        elif self.survey == 'skymapper':
-            self._cutout = SkymapperCutout(self)
-        elif self.survey == 'panstarrs':
-            self._cutout = PanSTARRSCutout(self)
-        elif self.survey == 'decam':
-            self._cutout = DECamCutout(self)
-        elif self.survey == 'iphas':
-            self._cutout = IPHASCutout(self)
-        elif self.survey == 'mwats':
-            self._cutout = MWATSCutout(self)
+            self.surveyname = ''
         else:
-            self._cutout = SkyviewCutout(self)
+            self.surveyname = SURVEYS.loc[self.survey]['name']
+
+            if SURVEYS.loc[self.survey].local:
+                self._cutout = LocalCutout(self)
+            elif self.survey == 'skymapper':
+                self._cutout = SkymapperCutout(self)
+            elif self.survey == 'panstarrs':
+                self._cutout = PanSTARRSCutout(self)
+            elif self.survey == 'decam':
+                self._cutout = DECamCutout(self)
+            elif self.survey == 'iphas':
+                self._cutout = IPHASCutout(self)
+            elif self.survey == 'mwats':
+                self._cutout = MWATSCutout(self)
+            else:
+                self._cutout = SkyviewCutout(self)
 
         self._cutout.fetch_sources(self)
 
@@ -237,6 +243,8 @@ class Cutout:
     def _plot_setup(self, fig, ax):
         """Create figure and determine normalisation parameters."""
 
+        self._check_data_valid()
+
         if ax:
             self.fig = fig
             self.ax = ax
@@ -249,7 +257,7 @@ class Cutout:
             self.ax.coords.grid(color='white', alpha=0.5)
 
         if self.options.get('title', True):
-            title = self.options.get('title', SURVEYS.loc[self.survey]['name'])
+            title = self.options.get('title', self.surveyname)
             self.ax.set_title(title, fontdict={'fontsize': 20, 'fontweight': 10})
 
         self.set_xlabel('RA (J2000)')
@@ -383,27 +391,36 @@ class Cutout:
         # Add ellipse for source within positional uncertainty
         if self.plot_source:
             source_colour = 'springgreen' if self.stokes == 'v' else 'springgreen'
-            self.sourcepos = Ellipse((self.source.ra_deg_cont,
-                                      self.source.dec_deg_cont),
-                                     self.source.min_axis / 3600,
-                                     self.source.maj_axis / 3600,
-                                     -self.source.pos_ang,
-                                     facecolor='none', edgecolor=source_colour,
-                                     ls=':', lw=2,
-                                     transform=self.ax.get_transform('world'))
+            self.sourcepos = Ellipse(
+                (self.source.ra_deg_cont, self.source.dec_deg_cont),
+                self.source.min_axis / 3600,
+                self.source.maj_axis / 3600,
+                -self.source.pos_ang,
+                facecolor='none',
+                edgecolor=source_colour,
+                ls=':',
+                lw=2,
+                zorder=10,
+                transform=self.ax.get_transform('world')
+            )
             self.ax.add_patch(self.sourcepos)
             
         # Add ellipse for other components in the FoV
         if self.plot_neighbours:
-            neighbour_colour = 'darkviolet' if self.stokes == 'v' else 'darkviolet'
+            neighbour_colour = 'k' if self.stokes == 'v' else 'rebeccapurple'
             for idx, neighbour in self.neighbours.iterrows():
-                n = Ellipse((neighbour.ra_deg_cont,
-                             neighbour.dec_deg_cont),
-                            neighbour.min_axis / 3600,
-                            neighbour.maj_axis / 3600,
-                            -neighbour.pos_ang,
-                            facecolor='none', edgecolor=neighbour_colour, ls=':', lw=2,
-                            transform=self.ax.get_transform('world'))
+                n = Ellipse(
+                    (neighbour.ra_deg_cont, neighbour.dec_deg_cont),
+                    neighbour.min_axis / 3600,
+                    neighbour.maj_axis / 3600,
+                    -neighbour.pos_ang,
+                    facecolor='none',
+                    edgecolor=neighbour_colour,
+                    ls=':',
+                    lw=2,
+                    zorder=1,
+                    transform=self.ax.get_transform('world')
+                )
                 self.ax.add_patch(n)
         
     def add_psf(self):
@@ -550,6 +567,7 @@ class ContourCutout(Cutout):
         # If custom data provided for ContourCutout, pop from kwargs
         # to avoid being read as radio data by Cutout sub-call.
         data = kwargs.pop('data', None)
+        stokes = kwargs.pop('stokes', 'i')
 
         # Other ContourCutout specific keywords are also popped
         self.contours = kwargs.pop('contours', 'racs-low')
@@ -560,7 +578,7 @@ class ContourCutout(Cutout):
         self.radio = Cutout(self.contours, position, size, **kwargs)
         self.radio.mjd = self.radio.mjd
 
-        super().__init__(survey, position, size, data=data, **kwargs)
+        super().__init__(survey, position, size, data=data, stokes=stokes, **kwargs)
 
         if self.correct_pm:
             self.correct_proper_motion()
@@ -717,8 +735,6 @@ class ContourCutout(Cutout):
 
     def plot(self, fig=None, ax=None):
         self._plot_setup(fig, ax)
-
-        self._check_data_valid()
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
