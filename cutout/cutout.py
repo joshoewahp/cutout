@@ -622,26 +622,23 @@ class ContourCutout(Cutout):
 
             self.ax.legend(handles, labels)
 
-    def align_image_to_contours(self):
-        if not self.correct_pm:
-            self.correct_proper_motion()
-            self.correct_pm = False
+    def align_image_to_contours(self, datapos):
+        """Shift WCS of pixel data to the radio epoch based upon the proper motion encoded in datapos."""
 
+        # Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec
         try:
-            pmra = self.oldpos.pm_ra
+            pmra = datapos.pm_ra
         except AttributeError as e:
-            pmra = self.oldpos.pm_ra_cosdec
-            logger.warning(e)
-            logger.warning("Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec")
+            pmra = datapos.pm_ra_cosdec
 
         orig_pos = SkyCoord(
             ra=self.wcs.wcs.crval[0] * u.deg,
             dec=self.wcs.wcs.crval[1] * u.deg,
             frame='icrs',
-            distance=self.oldpos.distance,
+            distance=datapos.distance,
             pm_ra_cosdec=pmra,
-            pm_dec=self.oldpos.pm_dec,
-            obstime=Time(self.mjd, format='mjd')
+            pm_dec=datapos.pm_dec,
+            obstime=datapos.obstime,
         )
         newpos = orig_pos.apply_space_motion(Time(self.radio.mjd, format='mjd'))
 
