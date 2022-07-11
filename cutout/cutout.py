@@ -622,25 +622,36 @@ class ContourCutout(Cutout):
 
             self.ax.legend(handles, labels)
 
-    def align_image_to_contours(self, datapos):
-        """Shift WCS of pixel data to the radio epoch based upon the proper motion encoded in datapos."""
+    def shift_coordinate_grid(self, pm_coord, shift_epoch):
+        """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
 
+        # Replace pixel data / WCS with copy centred on source
+        contour_background = ContourCutout(
+            self.survey,
+            pm_coord,
+            self.size,
+            band=self.band,
+        )
+        self.data = contour_background.data
+        self.wcs = contour_background.wcs
+        
         # Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec
         try:
-            pmra = datapos.pm_ra
+            pm_ra = pm_coord.pm_ra
         except AttributeError as e:
-            pmra = datapos.pm_ra_cosdec
+            pm_ra = pm_coord.pm_ra_cosdec
 
+        # Update CRVAL coordinates based on propagated proper motion
         orig_pos = SkyCoord(
             ra=self.wcs.wcs.crval[0] * u.deg,
             dec=self.wcs.wcs.crval[1] * u.deg,
             frame='icrs',
-            distance=datapos.distance,
-            pm_ra_cosdec=pmra,
-            pm_dec=datapos.pm_dec,
-            obstime=datapos.obstime,
+            distance=pm_coord.distance,
+            pm_ra_cosdec=pm_ra,
+            pm_dec=pm_coord.pm_dec,
+            obstime=pm_coord.obstime,
         )
-        newpos = orig_pos.apply_space_motion(Time(self.radio.mjd, format='mjd'))
+        newpos = orig_pos.apply_space_motion(shift_epoch)
 
         self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
 
