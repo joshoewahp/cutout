@@ -21,6 +21,7 @@ from astropy.visualization import ZScaleInterval, ImageNormalize
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.wcs.utils import proj_plane_pixel_scales
 from astroquery.simbad import Simbad
+from collections import defaultdict
 from dataclasses import dataclass
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnchoredText
@@ -622,6 +623,36 @@ class ContourCutout(Cutout):
 
             self.ax.legend(handles, labels)
 
+    def add_contours(self, survey, pos, shift_epoch=None, **kwargs):
+
+        stokes = kwargs.get('stokes', 'i')
+        colors = kwargs.get('colors', 'rebeccapurple')
+        label = kwargs.get('contourlabel', survey)
+
+        contour_cutout = ContourCutout(
+            survey,
+            pos,
+            size=self.size,
+            stokes=stokes,
+        )
+
+        levels = [l * np.nanmax(contour_cutout.data) for l in [0.3, 0.6, 0.9]]
+
+        if shift_epoch:
+            contour_cutout.shift_coordinate_grid(pos, shift_epoch)
+
+        self.ax.contour(
+            contour_cutout.data,
+            colors=colors,
+            linewidths=self.options.get('contourwidth', 3),
+            transform=self.ax.get_transform(contour_cutout.wcs),
+            levels=levels,
+        )
+
+        # Add to contour artist collection for legend label access
+        self.cs_dict[label] = Line2D([], [], color=colors)
+
+
     def shift_coordinate_grid(self, pm_coord, shift_epoch):
         """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
 
@@ -761,16 +792,21 @@ class ContourCutout(Cutout):
         else:
             self.levels = [self.peak * x for x in [.3, .6, .9]]
 
+        contour_label = self.options.get('contourlabel', self.contours)
         contour_width = self.options.get('contourwidth', 3)
         contour_color = 'k' if self.cmap == 'coolwarm' else 'orange'
 
-        self.cs = self.ax.contour(
+        self.ax.contour(
             self.radio.data,
             transform=self.ax.get_transform(self.radio.wcs),
             levels=self.levels,
             colors=contour_color,
             linewidths=contour_width,
         )
+
+        # Contour artist is placed inside self.cs_dict for external label / legend access
+        self.cs_dict = defaultdict(dict)
+        self.cs_dict[contour_label] = Line2D([], [], color=contour_color)
 
         if self.clabels:
             self.ax.clabel(self.cs, fontsize=10, fmt='%1.1f mJy')
