@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
               help="Trigger proper motion correction for nearby stars.")
 @click.option('-e', '--epoch', type=float, default=None,
               help="Epoch in either decimalyear or mjd format.")
+@click.option('-f', '--fieldname', type=str, default=None,
+              help="Fieldname (e.g. 1200+00) to pick.")
 @click.option('-p', '--psf', is_flag=True, help="Display the PSF alongside cutout.")
 @click.option('-L', '--corner', is_flag=True, default=False,
               help="Display corner marker at central cutout position.")
@@ -60,8 +62,34 @@ logger = logging.getLogger(__name__)
 @click.argument('RA', type=str)
 @click.argument('Dec', type=str)
 @click.argument('Survey', type=str)
-def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbours, annotation, title, header,
-         cmap, maxnorm, vmax, vmin, band, obfuscate, verbose, save, savefits, ra, dec, survey):
+def main(
+        size,
+        contours,
+        clabels,
+        pm,
+        epoch,
+        fieldname,
+        stokes,
+        sign,
+        psf,
+        corner,
+        neighbours,
+        annotation,
+        title,
+        header,
+        cmap,
+        maxnorm,
+        vmax,
+        vmin,
+        band,
+        obfuscate,
+        verbose,
+        save,
+        savefits,
+        ra,
+        dec,
+        survey
+):
     """Generate image cutout from multi-wavelength survey data.
 
     Available surveys:
@@ -138,7 +166,8 @@ def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbou
                 vmin=vmin,
                 pm=pm,
                 compact=True,
-                epoch=epoch
+                epoch=epoch,
+                fieldname=fieldname,
             )
 
         else:
@@ -161,7 +190,8 @@ def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbou
                 vmax=vmax,
                 vmin=vmin,
                 pm=pm,
-                epoch=epoch
+                epoch=epoch,
+                fieldname=fieldname,
             )
 
         cutout.plot()
@@ -169,7 +199,13 @@ def main(size, contours, clabels, pm, epoch, stokes, sign, psf, corner, neighbou
         if corner:
             span = len(cutout.data) / 4
             offset = len(cutout.data) / 8
-            corner = CornerMarker(position, cutout.wcs, colour='r', span=span, offset=offset)
+            corner = CornerMarker(
+                position,
+                cutout.wcs,
+                colour='r',
+                span=span,
+                offset=offset
+            )
             cutout.add_cornermarker(corner)
 
         if annotation:

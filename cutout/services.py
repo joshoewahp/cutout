@@ -12,6 +12,7 @@ from astropy.wcs import WCS, FITSFixedWarning
 from astropy.time import Time
 from astropy.table import Table
 from astropy.nddata import Cutout2D
+from astropy.nddata.utils import NoOverlapError
 from astroquery.skyview import SkyView
 from astroquery.vizier import Vizier
 from astropy.wcs.utils import proj_plane_pixel_scales
@@ -119,6 +120,9 @@ class CutoutService(ABC):
             cutout2d = Cutout2D(data[0, 0, :, :], cutout.position, cutout.size, wcs=wcs)
         except IndexError:
             cutout2d = Cutout2D(data, cutout.position, cutout.size, wcs=wcs)
+        except NoOverlapError:
+            field = cutout.options.get('fieldname')
+            raise FITSException(f"Field {field} does not contain position {cutout.position.ra:.2f}, {cutout.position.dec:.2f}")
         
         self.data = cutout2d.data * 1000
         self.wcs = cutout2d.wcs
@@ -145,8 +149,19 @@ class LocalCutout(CutoutService):
         if fields.empty:
             raise FITSException(f"No fields located at {cutout.position.ra:.2f}, {cutout.position.dec:.2f}")
 
-        self.closest = fields.sort_values('dist_field_centre').iloc[0]
-        self.filepath = self.closest[f'{cutout.stokes}_path']
+        # Choose field if specified by user, or default to nearest field centre
+        fieldname = cutout.options.get('fieldname')
+        fields.sort_values('dist_field_centre', inplace=True)
+
+        if fieldname:
+            fields = fields[fields.field == fieldname]
+
+        try:
+            self.field = fields.iloc[0]
+        except IndexError:
+            raise FITSException(f"Field {fieldname} not located")
+
+        self.filepath = self.field[f'{cutout.stokes}_path']
 
     def fetch_sources(self, cutout):
         """Locate target and neighbouring selavy components within positional uncertainty and FoV."""
@@ -158,7 +173,7 @@ class LocalCutout(CutoutService):
         try:
             selavy = SelavyCatalogue.from_params(
                 epoch=cutout.survey,
-                field=self.closest.field,
+                fields=self.field.field,
                 stokes=cutout.stokes
             )
             self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
