@@ -72,7 +72,7 @@ class CutoutService(ABC):
         """Set source and neighbour attributes from component list."""
 
         if self.components.empty:
-            logger.warning('No nearby components found.')
+            logger.debug('No nearby components found.')
             return
 
         self.components.sort_values('d2d', inplace=True)
@@ -145,7 +145,9 @@ class LocalCutout(CutoutService):
 
     def fetch_data(self, cutout):
 
-        fields = find_fields(cutout.position, cutout.survey)
+        is_vlass = 'vlass' in cutout.survey
+        tiletype = None if is_vlass else cutout.tiletype
+        fields = find_fields(cutout.position, cutout.survey, tiletype=tiletype)
 
         if fields.empty:
             raise FITSException(f"No fields located at {cutout.position.ra:.2f}, {cutout.position.dec:.2f}")
@@ -154,7 +156,9 @@ class LocalCutout(CutoutService):
         fieldname = cutout.options.get('fieldname')
         fields.sort_values('dist_field_centre', inplace=True)
 
-        if fieldname:
+        logger.debug(f"Fields:\n{fields}")
+
+        if fieldname and not is_vlass:
             fields = fields[fields.field == fieldname]
 
         try:
@@ -168,18 +172,19 @@ class LocalCutout(CutoutService):
         """Locate target and neighbouring selavy components within positional uncertainty and FoV."""
 
         # VLASS source catalogues not yet available
-        if cutout.survey == 'vlass':
+        if 'vlass' in cutout.survey:
             return
 
         try:
             selavy = SelavyCatalogue.from_params(
                 epoch=cutout.survey,
                 fields=self.field.field,
-                stokes=cutout.stokes
+                stokes=cutout.stokes,
+                tiletype=cutout.tiletype,
             )
             self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
         except FileNotFoundError:
-            logger.warning(f"Selavy files not found for {cutout.survey} Stokes {cutout.stokes}, disabling source ellipses.")
+            logger.debug(f"Selavy files not found for {cutout.survey} Stokes {cutout.stokes}, disabling source ellipses.")
             return
 
         self._find_neighbours(cutout)
@@ -259,7 +264,7 @@ class DECamCutout(CutoutService):
         if pixsize > 512:
             pixsize = 512
             max_size = pixsize * 0.262 / 3600
-            logger.warning(f"Using maximum DECam LS cutout pixsize of {max_size:.3f} deg")
+            logger.debug(f"Using maximum DECam LS cutout pixsize of {max_size:.3f} deg")
 
         link = f"http://legacysurvey.org/viewer/fits-cutout?ra={cutout.ra}&dec={cutout.dec}"
         link += f"&pixsize={pixsize}&layer=dr8&pixscale=0.262&bands={cutout.band}"

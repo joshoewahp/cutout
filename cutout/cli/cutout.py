@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
               help="Display location of neighbouring sources.")
 @click.option('-t', '--annotation', type=str, default=None,
               help="Annotated text.")
-@click.option('-T', '--title', type=str, default=None,
-              help="Cutout plot title. Defaults to survey name.")
+@click.option('-T', '--tiletype', type=click.Choice(['TILES', 'COMBINED']), default='TILES',
+              help="Produce cutout from tile images or combined mosaics.")
 @click.option('-H', '--header', is_flag=True, default=False,
               help="Display FITS header of target data.")
 @click.option('-C', '--cmap', type=str, default='gray_r',
@@ -75,7 +75,7 @@ def main(
         corner,
         neighbours,
         annotation,
-        title,
+        tiletype,
         header,
         cmap,
         maxnorm,
@@ -156,6 +156,7 @@ def main(
                 position,
                 size=size,
                 stokes=stokes,
+                tiletype=tiletype,
                 sign=psign,
                 psf=psf, 
                 neighbours=neighbours,
@@ -179,6 +180,7 @@ def main(
                 position,
                 size=size,
                 stokes=stokes,
+                tiletype=tiletype,
                 sign=psign,
                 contours=contours,
                 clabels=clabels,

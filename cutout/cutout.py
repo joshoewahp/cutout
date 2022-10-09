@@ -123,13 +123,14 @@ class CornerMarker:
 
 class Cutout:
 
-    def __init__(self, survey, position, size, stokes='i', **kwargs):
+    def __init__(self, survey, position, size, stokes='i', tiletype='TILES', **kwargs):
         self.survey = survey
         self.position = position
         self.ra = self.position.ra.to_value(u.deg)
         self.dec = self.position.dec.to_value(u.deg)
         self.size = size
         self.stokes = stokes
+        self.tiletype = tiletype
         self.sign = kwargs.pop('sign', 1)
         self.cmap = kwargs.pop('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
         self.correct_pm = kwargs.pop('pm', False)
@@ -206,8 +207,6 @@ class Cutout:
             else:
                 self._cutout = SkyviewCutout(self)
 
-        self._cutout.fetch_sources(self)
-
         return                           
     
     def _determine_epoch(self):
@@ -234,7 +233,7 @@ class Cutout:
         # If epoch still not resolved, disable PM correction
         if not epoch:
             msg = f"Could not detect {self.survey} epoch, PM correction disabled."
-            logger.warning(msg)
+            logger.debug(msg)
             self.correct_pm = False
 
             return
@@ -431,7 +430,7 @@ class Cutout:
             self.bmin = self.header['BMIN'] * 3600
             self.bpa = self.header['BPA']
         except KeyError:
-            logger.warning('Header did not contain PSF information, disabling PSF marker.')
+            logger.debug('Header did not contain PSF information, disabling PSF marker.')
             return
 
         try:
@@ -686,12 +685,17 @@ class ContourCutout(Cutout):
 
         self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
 
-    def correct_proper_motion(self, invert=False):
+        return
+        
+    def correct_proper_motion(self, invert=False, mjd=None):
         """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates."""
 
         # If mjd not set directly, check that it was set from FITS headers in get_cutout method
         if self.mjd is None:
-            raise FITSException("Date could not be inferred from header, supply with epoch keyword.")
+            if mjd is None:
+                raise FITSException("Date could not be inferred from header, supply with epoch keyword.")
+            else:
+                self.mjd = mjd
 
         obstime = Time(self.mjd, format='mjd')
 
@@ -706,7 +710,7 @@ class ContourCutout(Cutout):
             assert len(simbad) > 0
 
         except (ValueError, AssertionError):
-            logger.warning("No high proper-motion objects within 180 arcsec.")
+            logger.debug("No high proper-motion objects within 180 arcsec.")
             self.correct_pm = False
 
             return
@@ -748,7 +752,7 @@ class ContourCutout(Cutout):
 
         # Only display PM results if object within 15 arcsec
         if simbad['PM Corrected Separation (arcsec)'].min() > 15:
-            logger.warning("No PM corrected objects within 15 arcsec")
+            logger.debug("No PM corrected objects within 15 arcsec")
             self.correct_pm = False
 
             return
