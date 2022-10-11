@@ -229,6 +229,9 @@ class Cutout:
                     break
                 except KeyError:
                     continue
+        else:
+            epochtype = 'mjd' if epoch > 3000 else 'decimalyear'
+                    
 
         # If epoch still not resolved, disable PM correction
         if not epoch:
