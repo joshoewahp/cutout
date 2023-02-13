@@ -134,7 +134,7 @@ class RawCutout(CutoutService):
 
     def fetch_data(self, cutout):
         self.filepath = cutout.survey
-        self.hdulindex = 1
+        self.hdulindex = 0
 
     def fetch_sources(self, cutout):
         return

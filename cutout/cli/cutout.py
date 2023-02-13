@@ -2,6 +2,7 @@
 
 import click
 import logging
+import os
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
@@ -143,7 +144,8 @@ def main(
     position = SkyCoord(ra=ra, dec=dec, unit=(unit, u.deg))
     psign = -1 if sign else 1
 
-    s = SURVEYS.loc[survey]
+    # If passing raw FITS in, use RACS Low parameters
+    s = SURVEYS.loc['racs-low'] if os.path.isfile(survey) else SURVEYS.loc[survey]
     if not size:
         size = s.cutout_size
 
