@@ -231,7 +231,6 @@ class Cutout:
                     continue
         else:
             epochtype = 'mjd' if epoch > 3000 else 'decimalyear'
-                    
 
         # If epoch still not resolved, disable PM correction
         if not epoch:
@@ -579,7 +578,6 @@ class ContourCutout(Cutout):
         self.band = kwargs.pop('band', 'g')
 
         self.radio = Cutout(self.contours, position, size, **kwargs)
-        self.radio.mjd = self.radio.mjd
 
         super().__init__(survey, position, size, data=data, stokes=stokes, **kwargs)
 
