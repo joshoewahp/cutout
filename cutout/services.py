@@ -127,6 +127,9 @@ class CutoutService(ABC):
         self.data = cutout2d.data * 1000
         self.wcs = cutout2d.wcs
         self.header = self.wcs.to_header()
+        for key in ['BMAJ', 'BMIN', 'BPA']:
+            if header.get(key):
+                self.header[key] = header[key]
 
 
 class RawCutout(CutoutService):
