@@ -16,6 +16,7 @@ import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 from astropy.coordinates import SkyCoord, Distance
 from astropy.io import fits
+from regions import EllipseSkyRegion
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval, ImageNormalize
 from astropy.wcs import WCS, FITSFixedWarning
@@ -25,7 +26,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnchoredText
-from matplotlib.patches import Ellipse
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
 
 from astroutils.io import FITSException, get_surveys
@@ -393,37 +393,45 @@ class Cutout:
         # Add ellipse for source within positional uncertainty
         if self.plot_source:
             source_colour = 'springgreen' if self.stokes == 'v' else 'springgreen'
-            self.sourcepos = Ellipse(
-                (self.source.ra_deg_cont, self.source.dec_deg_cont),
-                self.source.min_axis / 3600,
-                self.source.maj_axis / 3600,
-                -self.source.pos_ang,
+            pos = SkyCoord(ra=self.source.ra_deg_cont, dec=self.source.dec_deg_cont, unit='deg')
+            self.sourcepos = EllipseSkyRegion(
+                pos,
+                width=self.source.maj_axis * u.arcsec,
+                height= self.source.min_axis * u.arcsec,
+                angle=(self.source.pos_ang + 90) * u.deg,
+            ).to_pixel(self.wcs)
+            self.sourcepos.plot(
+                ax=self.ax,
                 facecolor='none',
                 edgecolor=source_colour,
                 ls=':',
                 lw=2,
                 zorder=10,
-                transform=self.ax.get_transform('world')
             )
-            self.ax.add_patch(self.sourcepos)
             
         # Add ellipse for other components in the FoV
         if self.plot_neighbours:
             neighbour_colour = 'k' if self.stokes == 'v' else 'rebeccapurple'
             for idx, neighbour in self.neighbours.iterrows():
-                n = Ellipse(
-                    (neighbour.ra_deg_cont, neighbour.dec_deg_cont),
-                    neighbour.min_axis / 3600,
-                    neighbour.maj_axis / 3600,
-                    -neighbour.pos_ang,
+                pos = SkyCoord(
+                    ra=neighbour.ra_deg_cont,
+                    dec=neighbour.dec_deg_cont,
+                    unit='deg',
+                )
+                n = EllipseSkyRegion(
+                    pos,
+                    width=neighbour.maj_axis * u.arcsec,
+                    height=neighbour.min_axis * u.arcsec,
+                    angle=(neighbour.pos_ang + 90) * u.deg,
+                ).to_pixel(self.wcs)
+                n.plot(
+                    ax=self.ax,
                     facecolor='none',
                     edgecolor=neighbour_colour,
                     ls=':',
                     lw=2,
                     zorder=1,
-                    transform=self.ax.get_transform('world')
                 )
-                self.ax.add_patch(n)
         
     def add_psf(self):
 
@@ -595,12 +603,24 @@ class ContourCutout(Cutout):
         handles, labels = [], []
 
         if oldcoord.separation(newcoord).arcsec < 1:
-            self.ax.scatter(self.pm_coord.ra, self.pm_coord.dec, marker='x', s=200, color='r',
-                            transform=self.ax.get_transform('world'),
-                                label=f'{name} position at J{newtime:.2f}')
-            self.ax.scatter(self.oldpos.ra, self.oldpos.dec, marker='x', s=200, color='b',
-                            transform=self.ax.get_transform('world'),
-                            label=f'{name} position at J{oldtime:.2f}')
+            self.ax.scatter(
+                self.pm_coord.ra,
+                self.pm_coord.dec,
+                marker='x',
+                s=200,
+                color='r',
+                transform=self.ax.get_transform('world'),
+                label=f'{name} position at J{newtime:.2f}'
+            )
+            self.ax.scatter(
+                self.oldpos.ra,
+                self.oldpos.dec,
+                marker='x',
+                s=200,
+                color='b',
+                transform=self.ax.get_transform('world'),
+                label=f'{name} position at J{oldtime:.2f}'
+            )
             self.ax.legend()
         else:
             dra, ddec = oldcoord.spherical_offsets_to(newcoord)
