@@ -157,12 +157,16 @@ class LocalCutout(CutoutService):
 
         # Choose field if specified by user, or default to nearest field centre
         fieldname = cutout.options.get('fieldname')
+        sbid = cutout.options.get('sbid')
         fields.sort_values('dist_field_centre', inplace=True)
 
         logger.debug(f"Fields:\n{fields}")
 
-        if fieldname and not is_vlass:
-            fields = fields[fields.field == fieldname]
+        if not is_vlass:
+            if fieldname:
+                fields = fields[fields.field == fieldname]
+            if sbid:
+                fields = fields[fields.sbid == sbid]
 
         try:
             self.field = fields.iloc[0]
@@ -182,6 +186,7 @@ class LocalCutout(CutoutService):
             selavy = SelavyCatalogue.from_params(
                 epoch=cutout.survey,
                 fields=self.field.field,
+                sbids=self.field.sbid,
                 stokes=cutout.stokes,
                 tiletype=cutout.tiletype,
             )

@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
               help="Epoch in either decimalyear or mjd format.")
 @click.option('-f', '--fieldname', type=str, default=None,
               help="Fieldname (e.g. 1200+00) to pick.")
+@click.option('-B', '--sbid', type=str, default=None,
+              help="SBID (e.g. SB32155) to pick.")
 @click.option('-p', '--psf', is_flag=True, help="Display the PSF alongside cutout.")
 @click.option('-L', '--corner', is_flag=True, default=False,
               help="Display corner marker at central cutout position.")
@@ -70,6 +72,7 @@ def main(
         pm,
         epoch,
         fieldname,
+        sbid,
         stokes,
         sign,
         psf,
@@ -171,6 +174,7 @@ def main(
                 compact=True,
                 epoch=epoch,
                 fieldname=fieldname,
+                sbid=sbid,
             )
 
         else:
@@ -196,6 +200,7 @@ def main(
                 pm=pm,
                 epoch=epoch,
                 fieldname=fieldname,
+                sbid=sbid,
             )
 
         cutout.plot()
