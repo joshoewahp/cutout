@@ -43,6 +43,8 @@ class CutoutService(ABC):
         self.plot_neighbours = False
         self.hdulindex = 0
 
+        self.source = None
+
         self.fetch_data(cutout)
         self.fetch_sources(cutout)
 
@@ -206,12 +208,18 @@ class SkymapperCutout(CutoutService):
         self._set_cache_path(cutout)
 
         # Query Skymapper cutout service for links to cutout in each band
-        route = 'http://api.skymapper.nci.org.au/aus/siap/dr2/'
-        params = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=CSV&VERB=3&INTERSECT=covers'
-        sm_query_link = route + params
+        route = 'https://api.skymapper.nci.org.au/aus/siap/dr3/'
+        params = 'query?POS={:.5f},{:.5f}&SIZE={:.3f}&BAND=all&RESPONSEFORMAT=VOTABLE&VERB=3&INTERSECT=covers'
 
-        table = requests.get(sm_query_link.format(cutout.ra, cutout.dec, cutout.size.value))
-        links = pd.read_csv(io.StringIO(table.text))
+        sm_query_link = route + params.format(cutout.ra, cutout.dec, cutout.size.value)
+
+        table = requests.get(sm_query_link)
+        with open(f"{self.filepath}.xml", 'wb') as f:
+            f.write(table.content)
+        links = Table.read(f"{self.filepath}.xml", format='votable')[[
+            'band', 'get_image',
+        ]].to_pandas()
+        os.system(f"rm {self.filepath}.xml")
 
         # Check cutouts exist at position
         impos = f'{cutout.ra:.2f}, {cutout.dec:.2f}'
@@ -274,8 +282,8 @@ class DECamCutout(CutoutService):
             max_size = pixsize * 0.262 / 3600
             logger.debug(f"Using maximum DECam LS cutout pixsize of {max_size:.3f} deg")
 
-        link = f"http://legacysurvey.org/viewer/fits-cutout?ra={cutout.ra}&dec={cutout.dec}"
-        link += f"&pixsize={pixsize}&layer=dr8&pixscale=0.262&bands={cutout.band}"
+        link = f"https://www.legacysurvey.org/viewer/fits-cutout?ra={cutout.ra}&dec={cutout.dec}"
+        link += f"&size={pixsize}&layer=ls-dr9&pixscale=0.262&bands={cutout.band}"
         img = requests.get(link)
 
         if not os.path.exists(self.filepath):
