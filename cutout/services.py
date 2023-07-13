@@ -43,6 +43,7 @@ class CutoutService(ABC):
         self.plot_neighbours = False
         self.hdulindex = 0
 
+        self.local = False
         self.source = None
 
         self.fetch_data(cutout)
@@ -81,7 +82,9 @@ class CutoutService(ABC):
 
         # Set nearest component within positional uncertainty
         # as the target source and all others as neighbours
-        if self.components.iloc[0].d2d < SURVEYS.loc[cutout.survey].pos_err:
+        pos_err = cutout.size.to(u.arcsec) if self.local else SURVEYS.loc[cutout.survey].pos_err
+
+        if self.components.iloc[0].d2d < pos_err:
             self.source = self.components.iloc[0]
             self.neighbours = self.components.iloc[1:]
             self.plot_source = True
@@ -142,6 +145,16 @@ class RawCutout(CutoutService):
         self.hdulindex = 0
 
     def fetch_sources(self, cutout):
+        try:
+            selavy = SelavyCatalogue(cutout.selavy)
+            self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
+        except FileNotFoundError:
+            logger.debug(f"Selavy files not found at {cutout.selavy}, disabling source ellipses.")
+            return
+
+        self.local = True
+        self._find_neighbours(cutout)
+
         return
 
 

@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 @click.option('-p', '--psf', is_flag=True, help="Display the PSF alongside cutout.")
 @click.option('-L', '--corner', is_flag=True, default=False,
               help="Display corner marker at central cutout position.")
+@click.option('-V', '--selavy', type=click.Path(), default=None,
+              help='Path to selavy file for overlay of source components.')
 @click.option('--neighbours/--no-neighbours', default=True,
               help="Display location of neighbouring sources.")
 @click.option('-t', '--annotation', type=str, default=None,
@@ -77,6 +79,7 @@ def main(
         sign,
         psf,
         corner,
+        selavy,
         neighbours,
         annotation,
         tiletype,
@@ -164,6 +167,7 @@ def main(
                 tiletype=tiletype,
                 sign=psign,
                 psf=psf, 
+                selavy=selavy,
                 neighbours=neighbours,
                 band=band,
                 cmap=cmap,
@@ -191,6 +195,7 @@ def main(
                 contours=contours,
                 clabels=clabels,
                 psf=psf,
+                selavy=selavy,
                 neighbours=neighbours,
                 band=band,
                 cmap=cmap,

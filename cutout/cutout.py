@@ -133,6 +133,7 @@ class Cutout:
         self.tiletype = tiletype
         self.sign = kwargs.pop('sign', 1)
         self.cmap = kwargs.pop('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
+        self.selavy = kwargs.pop('selavy')
         self.correct_pm = kwargs.pop('pm', False)
         self.rotate_axes = False
 
