@@ -3,59 +3,56 @@
 Cutout module documentation
 """
 
-import io
-import os
-import sys
-import time
 import logging
+import os
 import warnings
-import numpy as np
-import pandas as pd
+from collections import defaultdict
+from dataclasses import dataclass
+
 import astropy.units as u
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
-from astropy.coordinates import SkyCoord, Distance
+import numpy as np
+from astropy.coordinates import Distance, SkyCoord
 from astropy.io import fits
-from regions import EllipseSkyRegion
 from astropy.time import Time
-from astropy.visualization import ZScaleInterval, ImageNormalize
+from astropy.visualization import ImageNormalize, ZScaleInterval
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.wcs.utils import proj_plane_pixel_scales
 from astroquery.simbad import Simbad
-from collections import defaultdict
-from dataclasses import dataclass
+from astroutils.io import FITSException, get_surveys
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnchoredText
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
+from regions import EllipseSkyRegion
 
-from astroutils.io import FITSException, get_surveys
 from cutout.services import (
-    RawCutout,
-    LocalCutout,
-    MWATSCutout,
-    SkymapperCutout,
-    PanSTARRSCutout,
     DECamCutout,
     IPHASCutout,
+    LocalCutout,
+    MWATSCutout,
+    PanSTARRSCutout,
+    RawCutout,
+    SkymapperCutout,
     SkyviewCutout,
 )
 
-warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
-warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
+warnings.filterwarnings("ignore", category=FITSFixedWarning, append=True)
+warnings.filterwarnings("ignore", category=RuntimeWarning, append=True)
 
 SURVEYS = get_surveys()
-SURVEYS.set_index('survey', inplace=True)
+SURVEYS.set_index("survey", inplace=True)
 
 Simbad.add_votable_fields(
-    'otype',
-    'ra(d)',
-    'dec(d)',
-    'parallax',
-    'pmdec',
-    'pmra',
-    'distance',
-    'sptype',
-    'distance_result',
+    "otype",
+    "ra(d)",
+    "dec(d)",
+    "parallax",
+    "pmdec",
+    "pmra",
+    "distance",
+    "sptype",
+    "distance_result",
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +71,7 @@ class CornerMarker:
 
     def _get_xy_lims(self):
         """Get x/y pixel coordinates of marker position."""
-        
+
         x = self.datapos[0] - 1
         y = self.datapos[1] - 1
 
@@ -91,30 +88,30 @@ class CornerMarker:
             color=self.colour,
             linewidth=2,
             zorder=10,
-            path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
+            path_effects=[pe.Stroke(linewidth=3, foreground="k"), pe.Normal()],
         )
 
         return raline
-        
+
     @property
     def decline(self):
         """Construct declination marker line."""
 
         x, y = self._get_xy_lims()
-        decline =  Line2D(
+        decline = Line2D(
             xdata=[x, x],
             ydata=[y + self.offset, y + self.span],
             color=self.colour,
             linewidth=2,
             zorder=10,
-            path_effects=[pe.Stroke(linewidth=3, foreground='k'), pe.Normal()]
+            path_effects=[pe.Stroke(linewidth=3, foreground="k"), pe.Normal()],
         )
 
         return decline
 
     def in_pixel_range(self, pixmin: int, pixmax: int) -> bool:
         """Check whether the pixel coordinate of marker is in a valid range."""
-        
+
         if any(i < pixmin or i > pixmax or np.isnan(i) for i in self.datapos):
             return False
 
@@ -122,8 +119,7 @@ class CornerMarker:
 
 
 class Cutout:
-
-    def __init__(self, survey, position, size, stokes='i', tiletype='TILES', **kwargs):
+    def __init__(self, survey, position, size, stokes="i", tiletype="TILES", **kwargs):
         self.survey = survey
         self.position = position
         self.ra = self.position.ra.to_value(u.deg)
@@ -131,10 +127,10 @@ class Cutout:
         self.size = size
         self.stokes = stokes
         self.tiletype = tiletype
-        self.sign = kwargs.pop('sign', 1)
-        self.cmap = kwargs.pop('cmap', 'coolwarm' if self.stokes == 'v' else 'gray_r')
-        self.selavy = kwargs.pop('selavy')
-        self.correct_pm = kwargs.pop('pm', False)
+        self.sign = kwargs.pop("sign", 1)
+        self.cmap = kwargs.pop("cmap", "coolwarm" if self.stokes == "v" else "gray_r")
+        self.selavy = kwargs.pop("selavy")
+        self.correct_pm = kwargs.pop("pm", False)
         self.rotate_axes = False
 
         self.options = kwargs
@@ -147,8 +143,14 @@ class Cutout:
             raise FITSException(msg)
 
     def __repr__(self):
-        template = "Cutout('{}', SkyCoord(ra={:.4f}, dec=dec{:.4f}, unit='deg'), size={:.4f})"
-        return template.format(self.survey, self.ra, self.dec, self.size)
+        temp = "{}('{}', SkyCoord(ra={:.4f}, dec=dec{:.4f}, unit='deg'), size={:.4f})"
+        return temp.format(
+            self.__class__.__name__,
+            self.survey,
+            self.ra,
+            self.dec,
+            self.size,
+        )
 
     def __getattr__(self, name):
         """Overload __getattr__ to make CutoutService attributes accessible directly from Cutout."""
@@ -156,7 +158,9 @@ class Cutout:
         try:
             return getattr(self._cutout, name)
         except (RecursionError, AttributeError):
-            raise AttributeError(f"{self.__class__.__name__} object has no attribute {name}")
+            raise AttributeError(
+                f"{self.__class__.__name__} object has no attribute {name}"
+            )
 
     @property
     def normalisable(self):
@@ -167,79 +171,66 @@ class Cutout:
     def _check_data_valid(self):
         """Run checks for invalid or missing data (e.g. all NaN or 0 pixels) from valid FITS file."""
 
-        is_valid = (sum(~np.isnan(self.data).flatten()) > 0 and self.data.flatten().sum() != 0)
+        is_valid = (
+            sum(~np.isnan(self.data).flatten()) > 0 and self.data.flatten().sum() != 0
+        )
         if not is_valid:
             raise FITSException(f"No data in {self.survey}")
 
     def _get_cutout(self):
-
-        # # This was used to pass in a data array from another cutout, which is useful when
-        # # shifting the image data to a proper motion corrected location. Refactor this to
-        # # de-clutter this function
-
-        # if self.options.get('data'):
-        #     c = self.options.get('data')
-        #     self.mjd = c.mjd
-        #     self.data = c.data
-        #     self.wcs = c.wcs
-        #     self.header = c.header
-        #     self.position = c.position
-
-        #     return
-
         if os.path.isfile(self.survey):
             self._cutout = RawCutout(self)
-            self.surveyname = ''
+            self.surveyname = ""
         else:
-            self.surveyname = SURVEYS.loc[self.survey]['name']
+            self.surveyname = SURVEYS.loc[self.survey]["name"]
 
             if SURVEYS.loc[self.survey].local:
                 self._cutout = LocalCutout(self)
-            elif self.survey == 'skymapper':
+            elif self.survey == "skymapper":
                 self._cutout = SkymapperCutout(self)
-            elif self.survey == 'panstarrs':
+            elif self.survey == "panstarrs":
                 self._cutout = PanSTARRSCutout(self)
-            elif self.survey == 'decam':
+            elif self.survey == "decam":
                 self._cutout = DECamCutout(self)
-            elif self.survey == 'iphas':
+            elif self.survey == "iphas":
                 self._cutout = IPHASCutout(self)
-            elif self.survey == 'mwats':
+            elif self.survey == "mwats":
                 self._cutout = MWATSCutout(self)
             else:
                 self._cutout = SkyviewCutout(self)
 
-        return                           
-    
-    def _determine_epoch(self):
+        return
 
-        epoch = self.options.pop('epoch', False)
+    def _determine_epoch(self):
+        epoch = self.options.pop("epoch", False)
 
         fits_date_keys = [
-            'MJD-OBS',
-            'MJD',
-            'DATE-OBS',
-            'DATE',
+            "MJD-OBS",
+            "MJD",
+            "DATE-OBS",
+            "DATE",
         ]
 
-        # Try each FITS header keyword in sequence if epoch not provided directly
         if not epoch:
+            # Try each obs date FITS header keyword in sequence if epoch not provided directly
             for key in fits_date_keys:
                 try:
                     epoch = self.header[key]
-                    epochtype = 'mjd' if 'MJD' in key else None
+                    epochtype = "mjd" if "MJD" in key else None
                     break
                 except KeyError:
                     continue
+
+            # If epoch still not resolved, disable PM correction
+            else:
+                msg = f"Could not detect {self.survey} epoch, PM correction disabled."
+                logger.debug(msg)
+                self.correct_pm = False
+
+                return
+
         else:
-            epochtype = 'mjd' if epoch > 3000 else 'decimalyear'
-
-        # If epoch still not resolved, disable PM correction
-        if not epoch:
-            msg = f"Could not detect {self.survey} epoch, PM correction disabled."
-            logger.debug(msg)
-            self.correct_pm = False
-
-            return
+            epochtype = "mjd" if epoch > 3000 else "decimalyear"
 
         self.mjd = Time(epoch, format=epochtype).mjd
 
@@ -256,19 +247,21 @@ class Cutout:
             self.ax = self.fig.add_subplot(111, projection=self.wcs)
 
         # Set basic figure display options
-        if self.options.get('grid', True):
-            self.ax.coords.grid(color='white', alpha=0.5)
+        if self.options.get("grid", True):
+            self.ax.coords.grid(color="white", alpha=0.5)
 
-        if self.options.get('title', True):
-            title = self.options.get('title', self.surveyname)
-            self.ax.set_title(title, fontdict={'fontsize': 20, 'fontweight': 10})
+        if self.options.get("title", True):
+            title = self.options.get("title", self.surveyname)
+            self.ax.set_title(title, fontdict={"fontsize": 20, "fontweight": 10})
 
-        self.set_xlabel('RA (J2000)')
-        self.set_ylabel('Dec (J2000)')
+        self.set_xlabel("RA (J2000)")
+        self.set_ylabel("Dec (J2000)")
 
         # Set compact or extended label / tick configuration
-        if self.options.get('compact', False):
-            tickcolor = 'k' if np.nanmax(np.abs(self.data)) == np.nanmax(self.data) else 'gray'
+        if self.options.get("compact", False):
+            tickcolor = (
+                "k" if np.nanmax(np.abs(self.data)) == np.nanmax(self.data) else "gray"
+            )
 
             lon = self.ax.coords[0]
             lat = self.ax.coords[1]
@@ -279,20 +272,19 @@ class Cutout:
             lon.set_ticks(number=5)
             lat.set_ticks(number=5)
 
-            self.ax.tick_params(axis='both', direction='in', length=5, color=tickcolor)
-            self.padlevel = self.options.get('ylabelpad', 5)
+            self.ax.tick_params(axis="both", direction="in", length=5, color=tickcolor)
+            self.padlevel = self.options.get("ylabelpad", 5)
 
         # Set colourmap normalisation
         self.norm = self._get_cmap_normalisation()
-        
-       
+
     def _get_cmap_normalisation(self):
         """Create colourmap normalisation for cutout map.
-        
+
         User supplied parameters take precedence in order of:
         --maxnorm
         --vmin and/or --vmax
-        
+
         or by default ZScaleInterval computes low-contrast limits which
         are made symmetric for Stokes V cutouts.
         """
@@ -302,22 +294,22 @@ class Cutout:
             return
 
         # Get min/max based upon ZScale with contrast parameter
-        contrast = self.options.get('contrast', 0.2)
+        contrast = self.options.get("contrast", 0.2)
         vmin, vmax = ZScaleInterval(contrast=contrast).get_limits(self.data)
 
         # Make this symmetric if using Stokes V
-        if self.stokes == 'v':
+        if self.stokes == "v":
             v = max(abs(vmin), abs(vmax))
             vmin = -v
             vmax = v
 
         # Override with user-supplied values if present
-        if self.options.get('vmin') or self.options.get('vmax'):
-            vmin = self.options.get('vmin', -2)
-            vmax = self.options.get('vmax', 1)
+        if self.options.get("vmin") or self.options.get("vmax"):
+            vmin = self.options.get("vmin", -2)
+            vmax = self.options.get("vmax", 1)
 
         # Normalise with maximum value in data
-        if self.options.get('maxnorm'):
+        if self.options.get("maxnorm"):
             vmax = np.nanmax(self.data)
             vmin = None
 
@@ -326,15 +318,14 @@ class Cutout:
             interval=ZScaleInterval(),
             vmin=vmin,
             vmax=vmax,
-            clip=True
+            clip=True,
         )
 
         return norm
 
-
     def _align_ylabel(self, ylabel):
         """Consistently offset y-axis label with varying coordinate label size."""
-        
+
         # Get coordinates of topleft pixel
         topleft = self.wcs.wcs_pix2world(0, self.data.shape[1] + 1, 1)
         dms_tick = SkyCoord(ra=topleft[0], dec=topleft[1], unit=u.deg).dec.dms
@@ -342,48 +333,48 @@ class Cutout:
         # Round coordinates to nearest 20 arcsec in direction of cutout centre
         # This corresponds to the coordinates of the widest ytick label
         sign = dms_tick[0] // abs(dms_tick[0])
-        d_str = f'{int(dms_tick[0])}'
+        d_str = f"{int(dms_tick[0])}"
         if len(d_str) == 1 or (len(d_str) == 2 and sign < 0):
-            d_str = 's' + d_str
-        m_str = f'{int(abs(dms_tick[1])):02d}'
+            d_str = "s" + d_str
+        m_str = f"{int(abs(dms_tick[1])):02d}"
 
         if sign < 0:
-            s_str = f'{int(round(abs(dms_tick[2]) // 20) * 20 + 20):02d}'
+            s_str = f"{int(round(abs(dms_tick[2]) // 20) * 20 + 20):02d}"
         else:
-            s_str = f'{int(round(abs(dms_tick[2]) // 20) * 20):02d}'
-        if s_str == '60':
-            s_str = '00'
-            m_str = f'{int(m_str) + 1:02d}'
+            s_str = f"{int(round(abs(dms_tick[2]) // 20) * 20):02d}"
+        if s_str == "60":
+            s_str = "00"
+            m_str = f"{int(m_str) + 1:02d}"
 
         # Pad axis label to offset individual ytick label character widths
         dec_str = d_str + m_str + s_str
 
-        charlen = {'-': .65, 's': .075}
+        charlen = {"-": 0.65, "s": 0.075}
         zeropad = 0.8 + sum([charlen.get(c, 0.5) for c in dec_str])
 
         self.ax.set_ylabel(ylabel, labelpad=self.padlevel - zeropad)
 
-    def add_annotation(self, annotation, location='upper left', **kwargs):
-
+    def add_annotation(self, annotation, location="upper left", **kwargs):
         props = {
-            'size': kwargs.get('size', 12),
-            'color': kwargs.get('color', 'firebrick'),
-            'alpha': kwargs.get('alpha', 0.7),
-            'weight': kwargs.get('weight', 'heavy'),
-            'family': 'sans-serif',
-            'usetex': False,
-            'path_effects': kwargs.get('path_effects')
+            "size": kwargs.get("size", 12),
+            "color": kwargs.get("color", "firebrick"),
+            "alpha": kwargs.get("alpha", 0.7),
+            "weight": kwargs.get("weight", "heavy"),
+            "family": "sans-serif",
+            "usetex": False,
+            "path_effects": kwargs.get("path_effects"),
         }
-        
-        text = AnchoredText(annotation, loc=location, frameon=False, prop=props) 
+
+        text = AnchoredText(annotation, loc=location, frameon=False, prop=props)
 
         self.ax.add_artist(text)
 
     def add_cornermarker(self, marker):
-
         if not marker.in_pixel_range(0, len(self.data)):
-            msga = "Cornermarker will be disabled as RA and Dec are outside of data range."
-            logger.warning(msga + msgb)
+            msga = (
+                "Cornermarker will be disabled as RA and Dec are outside of data range."
+            )
+            logger.warning(msga)
 
             return
 
@@ -395,31 +386,33 @@ class Cutout:
 
         # Add ellipse for source within positional uncertainty
         if self.plot_source:
-            source_colour = 'k' if self.stokes == 'v' else 'springgreen'
-            pos = SkyCoord(ra=self.source.ra_deg_cont, dec=self.source.dec_deg_cont, unit='deg')
+            source_colour = "k" if self.stokes == "v" else "springgreen"
+            pos = SkyCoord(
+                ra=self.source.ra_deg_cont, dec=self.source.dec_deg_cont, unit="deg"
+            )
             self.sourcepos = EllipseSkyRegion(
                 pos,
                 width=self.source.maj_axis * u.arcsec,
-                height= self.source.min_axis * u.arcsec,
+                height=self.source.min_axis * u.arcsec,
                 angle=(self.source.pos_ang + 90) * u.deg,
             ).to_pixel(self.wcs)
             self.sourcepos.plot(
                 ax=self.ax,
-                facecolor='none',
+                facecolor="none",
                 edgecolor=source_colour,
-                ls=':',
+                ls=":",
                 lw=1.5,
                 zorder=10,
             )
-            
+
         # Add ellipse for other components in the FoV
         if self.plot_neighbours:
-            neighbour_colour = 'k' if self.stokes == 'v' else 'rebeccapurple'
-            for idx, neighbour in self.neighbours.iterrows():
+            neighbour_colour = "k" if self.stokes == "v" else "rebeccapurple"
+            for _, neighbour in self.neighbours.iterrows():
                 pos = SkyCoord(
                     ra=neighbour.ra_deg_cont,
                     dec=neighbour.dec_deg_cont,
-                    unit='deg',
+                    unit="deg",
                 )
                 n = EllipseSkyRegion(
                     pos,
@@ -429,36 +422,37 @@ class Cutout:
                 ).to_pixel(self.wcs)
                 n.plot(
                     ax=self.ax,
-                    facecolor='none',
+                    facecolor="none",
                     edgecolor=neighbour_colour,
-                    ls=':',
+                    ls=":",
                     lw=2,
                     zorder=1,
                 )
-        
-    def add_psf(self):
 
+    def add_psf(self):
         try:
-            self.bmaj = self.header['BMAJ'] * 3600
-            self.bmin = self.header['BMIN'] * 3600
-            self.bpa = self.header['BPA']
+            self.bmaj = self.header["BMAJ"] * 3600
+            self.bmin = self.header["BMIN"] * 3600
+            self.bpa = self.header["BPA"]
         except KeyError:
-            logger.debug('Header did not contain PSF information, disabling PSF marker.')
+            logger.debug(
+                "Header did not contain PSF information, disabling PSF marker."
+            )
             return
 
         try:
-            cdelt = self.header['CDELT1']
+            cdelt = self.header["CDELT1"]
         except KeyError:
-            cdelt = self.header['CD1_1']
+            cdelt = self.header["CD1_1"]
 
-        if self.options.get('beamsquare'):
+        if self.options.get("beamsquare"):
             frame = True
-            facecolor = 'k'
-            edgecolor = 'k'
+            facecolor = "k"
+            edgecolor = "k"
         else:
             frame = False
-            facecolor = 'white'
-            edgecolor = 'k'
+            facecolor = "white"
+            edgecolor = "k"
 
         x = self.bmin / abs(cdelt) / 3600
         y = self.bmaj / abs(cdelt) / 3600
@@ -471,7 +465,7 @@ class Cutout:
             loc=3,
             pad=0.5,
             borderpad=0.4,
-            frameon=frame
+            frameon=frame,
         )
         self.beam.ellipse.set(facecolor=facecolor, edgecolor=edgecolor)
 
@@ -487,15 +481,12 @@ class Cutout:
         # Create new WCS as Skymapper does weird things with CDELT
         self.wcs = WCS(naxis=2)
 
-        # Centre pixel is offset by 1 due to array indexing convention
-        # self.wcs.wcs.crpix = [(len(self.data)) / 2 + 1,
-        #                       (len(self.data)) / 2 + 1]
         self.wcs.wcs.crpix = [crpix[0], crpix[1]]
         self.wcs.wcs.crval = [0, 0]
         self.wcs.wcs.cdelt = [-cdelt1, cdelt2]
         self.wcs.wcs.ctype = ctype
 
-        if 'radio' in dir(self):
+        if "radio" in dir(self):
             r_crpix = self.radio.wcs.wcs_world2pix(self.ra, self.dec, 1)
             self.radio.wcs.wcs.crpix = [r_crpix[0], r_crpix[1]]
             self.radio.wcs.wcs.crval = [0, 0]
@@ -505,7 +496,7 @@ class Cutout:
             source = SkyCoord(
                 ra=self.source.ra_deg_cont,
                 dec=self.source.dec_deg_cont,
-                unit='deg',
+                unit="deg",
             )
 
             source_ra, source_dec = self.position.spherical_offsets_to(source)
@@ -518,7 +509,7 @@ class Cutout:
             c = SkyCoord(
                 ra=self.neighbours.ra_deg_cont,
                 dec=self.neighbours.dec_deg_cont,
-                unit='deg',
+                unit="deg",
             )
             ras = []
             decs = []
@@ -532,21 +523,21 @@ class Cutout:
 
         self.offsets = True
 
-    def hide_coords(self, axis='both', ticks=True, labels=True):
+    def hide_coords(self, axis="both", ticks=True, labels=True):
         """Remove all coordinates and identifying information."""
 
         lon = self.ax.coords[0]
         lat = self.ax.coords[1]
 
-        if axis in ['x', 'both']:
-            lon.set_axislabel(' ')
+        if axis in ["x", "both"]:
+            lon.set_axislabel(" ")
             if labels:
                 lon.set_ticklabel_visible(False)
             if ticks:
                 lon.set_ticks_visible(False)
 
-        if axis in ['y', 'both']:
-            lat.set_axislabel(' ')
+        if axis in ["y", "both"]:
+            lat.set_axislabel(" ")
             if labels:
                 lat.set_ticklabel_visible(False)
             if ticks:
@@ -557,7 +548,7 @@ class Cutout:
 
         self._plot_setup(fig, ax)
 
-        if self.stokes == 'v':
+        if self.stokes == "v":
             self.cmap = plt.cm.coolwarm
 
         absmax = max(self.data.max(), self.data.min(), key=abs)
@@ -568,26 +559,27 @@ class Cutout:
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
-        if self.options.get('bar', True):
-            try:
-                self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
-            except UnboundLocalError:
-                logger.error("Colorbar failed. Upgrade to recent version of astropy ")
+        if self.options.get("bar", True):
+            self.fig.colorbar(
+                self.im,
+                label=r"Flux Density (mJy beam$^{-1}$)",
+                ax=self.ax,
+            )
 
-        if self.options.get('psf'):
+        if self.options.get("psf"):
             self.add_psf()
 
         self.add_source_ellipse()
 
-    def save(self, path, fmt='png'):
+    def save(self, path, fmt="png"):
         """Save figure with tight bounding box."""
-        self.fig.savefig(path, format=fmt, bbox_inches='tight')
+        self.fig.savefig(path, format=fmt, bbox_inches="tight")
 
     def savefits(self, path):
         """Save FITS cutout."""
-        
+
         header = self.wcs.to_header()
-        header['BUNIT'] = 'Jy/beam'
+        header["BUNIT"] = "Jy/beam"
         hdu = fits.PrimaryHDU(data=self.data / 1e3, header=header)
         hdu.writeto(path)
 
@@ -602,19 +594,17 @@ class Cutout:
 
 
 class ContourCutout(Cutout):
-
     def __init__(self, survey, position, size, **kwargs):
-
         # If custom data provided for ContourCutout, pop from kwargs
         # to avoid being read as radio data by Cutout sub-call.
-        data = kwargs.pop('data', None)
-        stokes = kwargs.pop('stokes', 'i')
+        data = kwargs.pop("data", None)
+        stokes = kwargs.pop("stokes", "i")
 
         # Other ContourCutout specific keywords are also popped
-        self.contours = kwargs.pop('contours', 'racs-low')
-        self.clabels = kwargs.pop('clabels', False)
-        self.bar = kwargs.pop('bar', False)
-        self.band = kwargs.pop('band', 'g')
+        self.contours = kwargs.pop("contours", "racs-low")
+        self.clabels = kwargs.pop("clabels", False)
+        self.bar = kwargs.pop("bar", False)
+        self.band = kwargs.pop("band", "g")
 
         self.radio = Cutout(self.contours, position, size, **kwargs)
 
@@ -629,28 +619,28 @@ class ContourCutout(Cutout):
         name = self.simbad.iloc[0]["Object"]
         oldcoord = SkyCoord(self.oldpos.ra, self.oldpos.dec, unit=u.deg)
         newcoord = SkyCoord(self.pm_coord.ra, self.pm_coord.dec, unit=u.deg)
-        oldtime = Time(self.mjd, format='mjd').decimalyear
-        newtime = Time(self.radio.mjd, format='mjd').decimalyear
+        oldtime = Time(self.mjd, format="mjd").decimalyear
+        newtime = Time(self.radio.mjd, format="mjd").decimalyear
         handles, labels = [], []
 
         if oldcoord.separation(newcoord).arcsec < 1:
             self.ax.scatter(
                 self.pm_coord.ra,
                 self.pm_coord.dec,
-                marker='x',
+                marker="x",
                 s=200,
-                color='r',
-                transform=self.ax.get_transform('world'),
-                label=f'{name} position at J{newtime:.2f}'
+                color="r",
+                transform=self.ax.get_transform("world"),
+                label=f"{name} position at J{newtime:.2f}",
             )
             self.ax.scatter(
                 self.oldpos.ra,
                 self.oldpos.dec,
-                marker='x',
+                marker="x",
                 s=200,
-                color='b',
-                transform=self.ax.get_transform('world'),
-                label=f'{name} position at J{oldtime:.2f}'
+                color="b",
+                transform=self.ax.get_transform("world"),
+                label=f"{name} position at J{oldtime:.2f}",
             )
             self.ax.legend()
         else:
@@ -661,24 +651,30 @@ class ContourCutout(Cutout):
                 dra.deg,
                 ddec.deg,
                 width=8e-5,
-                color='r',
+                color="r",
                 length_includes_head=True,
                 zorder=10,
-                transform=self.ax.get_transform('world')
+                transform=self.ax.get_transform("world"),
             )
 
-            arrow_handle = Line2D([], [], ls='none', marker=r'$\leftarrow$', markersize=10, color='r')
-            arrow_label = f'Proper motion from J{oldtime:.2f}-J{newtime:.2f}'
+            arrow_handle = Line2D(
+                [],
+                [],
+                ls="none",
+                marker=r"$\leftarrow$",
+                markersize=10,
+                color="r",
+            )
+            arrow_label = f"Proper motion from J{oldtime:.2f}-J{newtime:.2f}"
             handles.append(arrow_handle)
             labels.append(arrow_label)
 
             self.ax.legend(handles, labels)
 
     def add_contours(self, survey, pos, shift_epoch=None, **kwargs):
-
-        stokes = kwargs.get('stokes', 'i')
-        colors = kwargs.get('colors', 'rebeccapurple')
-        label = kwargs.get('contourlabel', survey)
+        stokes = kwargs.get("stokes", "i")
+        colors = kwargs.get("colors", "rebeccapurple")
+        label = kwargs.get("contourlabel", survey)
 
         contour_cutout = ContourCutout(
             survey,
@@ -695,14 +691,13 @@ class ContourCutout(Cutout):
         self.ax.contour(
             contour_cutout.data,
             colors=colors,
-            linewidths=self.options.get('contourwidth', 3),
+            linewidths=self.options.get("contourwidth", 3),
             transform=self.ax.get_transform(contour_cutout.wcs),
             levels=levels,
         )
 
         # Add to contour artist collection for legend label access
         self.cs_dict[label] = Line2D([], [], color=colors)
-
 
     def shift_coordinate_grid(self, pm_coord, shift_epoch):
         """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
@@ -716,7 +711,7 @@ class ContourCutout(Cutout):
         )
         self.data = contour_background.data
         self.wcs = contour_background.wcs
-        
+
         # Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec
         try:
             pm_ra = pm_coord.pm_ra
@@ -727,7 +722,7 @@ class ContourCutout(Cutout):
         orig_pos = SkyCoord(
             ra=self.wcs.wcs.crval[0] * u.deg,
             dec=self.wcs.wcs.crval[1] * u.deg,
-            frame='icrs',
+            frame="icrs",
             distance=pm_coord.distance,
             pm_ra_cosdec=pm_ra,
             pm_dec=pm_coord.pm_dec,
@@ -738,26 +733,30 @@ class ContourCutout(Cutout):
         self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
 
         return
-        
+
     def correct_proper_motion(self, invert=False, mjd=None):
         """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates."""
 
         # If mjd not set directly, check that it was set from FITS headers in get_cutout method
         if self.mjd is None:
             if mjd is None:
-                raise FITSException("Date could not be inferred from header, supply with epoch keyword.")
+                raise FITSException(
+                    "Date could not be inferred from header, supply with epoch keyword."
+                )
             else:
                 self.mjd = mjd
 
-        obstime = Time(self.mjd, format='mjd')
+        obstime = Time(self.mjd, format="mjd")
 
         simbad = Simbad.query_region(self.position, radius=180 * u.arcsec)
 
         # Catch SIMBAD failure either from None return of query or no stellar type matches in region
         try:
             simbad = simbad.to_pandas()
-            pm_types = ['*', '**', 'PM*', 'EB*', 'Star', 'PSR', 'Pulsar', 'Flare*']
-            simbad = simbad[(simbad['OTYPE'].isin(pm_types)) | (simbad['SP_TYPE'].str.len() > 0)]
+            pm_types = ["*", "**", "PM*", "EB*", "Star", "PSR", "Pulsar", "Flare*"]
+            simbad = simbad[
+                (simbad["OTYPE"].isin(pm_types)) | (simbad["SP_TYPE"].str.len() > 0)
+            ]
 
             assert len(simbad) > 0
 
@@ -768,60 +767,61 @@ class ContourCutout(Cutout):
             return
 
         # Treat non-existent proper motion parameters as extremely distant objects
-        simbad['PMRA'].fillna(0, inplace=True)
-        simbad['PMDEC'].fillna(0, inplace=True)
-        simbad['PLX_VALUE'].fillna(0.01, inplace=True)
+        simbad["PMRA"].fillna(0, inplace=True)
+        simbad["PMDEC"].fillna(0, inplace=True)
+        simbad["PLX_VALUE"].fillna(0.01, inplace=True)
 
-        newtime = Time(self.radio.mjd, format='mjd')
-        pmra = simbad['PMRA'].values * u.mas / u.yr
-        pmdec = simbad['PMDEC'].values * u.mas / u.yr
+        newtime = Time(self.radio.mjd, format="mjd")
+        pmra = simbad["PMRA"].values * u.mas / u.yr
+        pmdec = simbad["PMDEC"].values * u.mas / u.yr
 
-        dist = Distance(parallax=simbad['PLX_VALUE'].values * u.mas)
+        dist = Distance(parallax=simbad["PLX_VALUE"].values * u.mas)
 
-        simbad['j2000pos'] = SkyCoord(
-            ra=simbad['RA_d'].values * u.deg,
-            dec=simbad['DEC_d'].values * u.deg,
-            frame='icrs',
+        simbad["j2000pos"] = SkyCoord(
+            ra=simbad["RA_d"].values * u.deg,
+            dec=simbad["DEC_d"].values * u.deg,
+            frame="icrs",
             distance=dist,
             pm_ra_cosdec=pmra,
             pm_dec=pmdec,
-            obstime='J2000',
+            obstime="J2000",
         )
 
         datapos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(obstime))
         newpos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(newtime))
 
         simbad_cols = {
-            'MAIN_ID': 'Object',
-            'OTYPE': 'Type',
-            'SP_TYPE': 'Spectral Type',
-            'DISTANCE_RESULT': 'Separation (arcsec)',
+            "MAIN_ID": "Object",
+            "OTYPE": "Type",
+            "SP_TYPE": "Spectral Type",
+            "DISTANCE_RESULT": "Separation (arcsec)",
         }
         simbad = simbad.rename(columns=simbad_cols)
         simbad = simbad[simbad_cols.values()].copy()
-        simbad['PM Corrected Separation (arcsec)'] = np.round(newpos.apply(
-            lambda x: x.separation(self.position).arcsec), 3)
+        simbad["PM Corrected Separation (arcsec)"] = np.round(
+            newpos.apply(lambda x: x.separation(self.position).arcsec), 3
+        )
 
         # Only display PM results if object within 15 arcsec
-        if simbad['PM Corrected Separation (arcsec)'].min() > 15:
+        if simbad["PM Corrected Separation (arcsec)"].min() > 15:
             logger.debug("No PM corrected objects within 15 arcsec")
             self.correct_pm = False
 
             return
 
-        self.simbad = simbad.sort_values('PM Corrected Separation (arcsec)')
-        logger.info(f'SIMBAD results:\n {self.simbad.head()}')
+        self.simbad = simbad.sort_values("PM Corrected Separation (arcsec)")
+        logger.info(f"SIMBAD results:\n {self.simbad.head()}")
 
-        nearest = self.simbad['PM Corrected Separation (arcsec)'].idxmin()
+        nearest = self.simbad["PM Corrected Separation (arcsec)"].idxmin()
 
         self.oldpos = datapos[nearest]
         self.pm_coord = newpos[nearest]
 
         near_object = self.simbad.loc[nearest].Object
-        msg = f'{near_object} proper motion corrected to <{self.pm_coord.ra:.4f}, {self.pm_coord.dec:.4f}>'
+        msg = f"{near_object} proper motion corrected to <{self.pm_coord.ra:.4f}, {self.pm_coord.dec:.4f}>"
         logger.info(msg)
 
-        missing = simbad[simbad['PM Corrected Separation (arcsec)'].isna()]
+        missing = simbad[simbad["PM Corrected Separation (arcsec)"].isna()]
         if len(missing) > 0:
             msg = f"Some objects missing PM data, and may be a closer match than presented:\n {missing}"
             logger.warning(msg)
@@ -838,19 +838,19 @@ class ContourCutout(Cutout):
         self.peak = np.nanmax(self.radio.data)
         self.radiorms = np.sqrt(np.mean(np.square(self.radio.data)))
 
-        if self.options.get('rmslevels'):
+        if self.options.get("rmslevels"):
             self.levels = [self.radiorms * x for x in [3, 6]]
-        elif self.options.get('peaklevels'):
+        elif self.options.get("peaklevels"):
             midx = int(self.radio.data.shape[0] / 2)
             midy = int(self.radio.data.shape[1] / 2)
             peak = self.radio.data[midx, midy]
             self.levels = np.logspace(np.log10(0.3 * peak), np.log10(0.9 * peak), 3)
         else:
-            self.levels = [self.peak * x for x in [.3, .6, .9]]
+            self.levels = [self.peak * x for x in [0.3, 0.6, 0.9]]
 
-        contour_label = self.options.get('contourlabel', self.contours)
-        contour_width = self.options.get('contourwidth', 3)
-        contour_color = 'k' if self.cmap == 'coolwarm' else 'orange'
+        contour_label = self.options.get("contourlabel", self.contours)
+        contour_width = self.options.get("contourwidth", 3)
+        contour_color = "k" if self.cmap == "coolwarm" else "orange"
 
         self.ax.contour(
             self.radio.data,
@@ -865,14 +865,17 @@ class ContourCutout(Cutout):
         self.cs_dict[contour_label] = Line2D([], [], color=contour_color)
 
         if self.clabels:
-            self.ax.clabel(self.cs, fontsize=10, fmt='%1.1f mJy')
+            self.ax.clabel(self.cs, fontsize=10, fmt="%1.1f mJy")
 
         if self.bar:
-            self.fig.colorbar(self.im, label=r'Flux Density (mJy beam$^{-1}$)', ax=self.ax)
+            self.fig.colorbar(
+                self.im,
+                label=r"Flux Density (mJy beam$^{-1}$)",
+                ax=self.ax,
+            )
 
-        if self.survey == 'panstarrs' and self.options.get('title', True):
+        if self.survey == "panstarrs" and self.options.get("title", True):
             self.ax.set_title(f"{SURVEYS.loc[self.survey]['name']} ({self.band}-band)")
 
         if self.correct_pm:
             self._add_pm_location()
-            
