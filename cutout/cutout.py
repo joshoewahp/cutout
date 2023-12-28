@@ -372,7 +372,9 @@ class Cutout:
             'weight': kwargs.get('weight', 'heavy'),
             'family': 'sans-serif',
             'usetex': False,
+            'path_effects': kwargs.get('path_effects')
         }
+        
         text = AnchoredText(annotation, loc=location, frameon=False, prop=props) 
 
         self.ax.add_artist(text)
@@ -393,7 +395,7 @@ class Cutout:
 
         # Add ellipse for source within positional uncertainty
         if self.plot_source:
-            source_colour = 'springgreen' if self.stokes == 'v' else 'springgreen'
+            source_colour = 'k' if self.stokes == 'v' else 'springgreen'
             pos = SkyCoord(ra=self.source.ra_deg_cont, dec=self.source.dec_deg_cont, unit='deg')
             self.sourcepos = EllipseSkyRegion(
                 pos,
@@ -406,7 +408,7 @@ class Cutout:
                 facecolor='none',
                 edgecolor=source_colour,
                 ls=':',
-                lw=2,
+                lw=1.5,
                 zorder=10,
             )
             
