@@ -82,11 +82,11 @@ class CutoutService(ABC):
 
         # Set nearest component within positional uncertainty
         # as the target source and all others as neighbours
-        pos_err = cutout.size.to(u.arcsec) if self.local else SURVEYS.loc[cutout.survey].pos_err
+        pos_err = cutout.size if self.local else SURVEYS.loc[cutout.survey].pos_err * u.arcsec
 
-        if self.components.iloc[0].d2d < pos_err:
-            self.source = self.components.iloc[0]
-            self.neighbours = self.components.iloc[1:]
+        if self.components.iloc[0].d2d * u.arcsec < pos_err*5:
+            self.source = self.components.iloc[0].copy()
+            self.neighbours = self.components.iloc[1:].copy()
             self.plot_source = True
         else:
             self.source = None
