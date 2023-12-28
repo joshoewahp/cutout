@@ -149,7 +149,7 @@ class RawCutout(CutoutService):
             selavy = SelavyCatalogue(cutout.selavy)
             self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
         except FileNotFoundError:
-            logger.debug(f"Selavy files not found at {cutout.selavy}, disabling source ellipses.")
+            logger.error(f"Selavy files not found at {cutout.selavy}, disabling source ellipses.")
             return
 
         self.local = True

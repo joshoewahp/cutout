@@ -497,10 +497,38 @@ class Cutout:
 
         if 'radio' in dir(self):
             r_crpix = self.radio.wcs.wcs_world2pix(self.ra, self.dec, 1)
-            # self.radio.wcs.wcs.crpix = [(len(self.radio.data)) / 2 + 1,
-            #                             (len(self.radio.data)) / 2 + 1]
             self.radio.wcs.wcs.crpix = [r_crpix[0], r_crpix[1]]
             self.radio.wcs.wcs.crval = [0, 0]
+
+        if self.plot_source:
+            # Shift source ellipses
+            source = SkyCoord(
+                ra=self.source.ra_deg_cont,
+                dec=self.source.dec_deg_cont,
+                unit='deg',
+            )
+
+            source_ra, source_dec = self.position.spherical_offsets_to(source)
+
+            self.source.ra_deg_cont = source_ra.deg
+            self.source.dec_deg_cont = source_dec.deg
+
+        if self.plot_neighbours:
+            # Neighbours not quite transforming properly
+            c = SkyCoord(
+                ra=self.neighbours.ra_deg_cont,
+                dec=self.neighbours.dec_deg_cont,
+                unit='deg',
+            )
+            ras = []
+            decs = []
+            for neighbour in c:
+                n_ra, n_dec = self.position.spherical_offsets_to(neighbour)
+                ras.append(n_ra.deg)
+                decs.append(n_dec.deg)
+
+            self.neighbours.ra_deg_cont = ras
+            self.neighbours.dec_deg_cont = decs
 
         self.offsets = True
 
