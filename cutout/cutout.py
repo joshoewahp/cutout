@@ -22,8 +22,10 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 from astroquery.simbad import Simbad
 from astroutils.io import FITSException, get_surveys
 from matplotlib.lines import Line2D
-from matplotlib.offsetbox import AnchoredText
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
+from matplotlib.offsetbox import AnchoredOffsetbox, AnchoredText, AuxTransformBox
+from matplotlib.patches import Ellipse
+
+# from mpl_toolkits.axes_grid1.anchored_artists import AnchoredEllipse
 from regions import EllipseSkyRegion
 
 from cutout.services import (
@@ -56,6 +58,55 @@ Simbad.add_votable_fields(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_simbad(position):
+    simbad = Simbad.query_region(position, radius=180 * u.arcsec)
+
+    # Catch SIMBAD failure either from None return of query or no stellar type matches in region
+    try:
+        simbad = simbad.to_pandas()
+        pm_types = ["*", "**", "PM*", "EB*", "Star", "PSR", "Pulsar", "Flare*"]
+        simbad = simbad[
+            (simbad["OTYPE"].isin(pm_types)) | (simbad["SP_TYPE"].str.len() > 0)
+        ]
+
+        assert len(simbad) > 0
+
+    except (ValueError, AssertionError):
+        return
+
+    # Treat non-existent proper motion parameters as extremely distant objects
+    simbad["PMRA"].fillna(0, inplace=True)
+    simbad["PMDEC"].fillna(0, inplace=True)
+    simbad["PLX_VALUE"].fillna(0.01, inplace=True)
+
+    pmra = simbad["PMRA"].values * u.mas / u.yr
+    pmdec = simbad["PMDEC"].values * u.mas / u.yr
+
+    dist = Distance(parallax=simbad["PLX_VALUE"].values * u.mas)
+
+    simbad["j2000pos"] = SkyCoord(
+        ra=simbad["RA_d"].values * u.deg,
+        dec=simbad["DEC_d"].values * u.deg,
+        frame="icrs",
+        distance=dist,
+        pm_ra_cosdec=pmra,
+        pm_dec=pmdec,
+        obstime="J2000",
+    )
+
+    simbad_cols = {
+        "MAIN_ID": "Object",
+        "OTYPE": "Type",
+        "SP_TYPE": "Spectral Type",
+        "DISTANCE_RESULT": "Separation (arcsec)",
+        "j2000pos": "j2000pos",
+    }
+    simbad = simbad.rename(columns=simbad_cols)
+    simbad = simbad[simbad_cols.values()].copy()
+
+    return simbad
 
 
 @dataclass
@@ -128,22 +179,23 @@ class Cutout:
         self.stokes = stokes
         self.tiletype = tiletype
         self.sign = kwargs.pop("sign", 1)
+        self.bar = kwargs.pop("bar", True)
         self.cmap = kwargs.pop("cmap", "coolwarm" if self.stokes == "v" else "gray_r")
-        self.selavy = kwargs.pop("selavy")
-        self.correct_pm = kwargs.pop("pm", False)
-        self.rotate_axes = False
+        self.band = kwargs.pop("band", "g")
+        self.selavy = kwargs.pop("selavy", None)
+        self.correct_pm = False
 
         self.options = kwargs
 
         try:
             self._get_cutout()
             self._determine_epoch()
-        except Exception as e:
+        except FileNotFoundError as e:
             msg = f"{survey} failed: {e}"
             raise FITSException(msg)
 
     def __repr__(self):
-        temp = "{}('{}', SkyCoord(ra={:.4f}, dec=dec{:.4f}, unit='deg'), size={:.4f})"
+        temp = "{}('{}', SkyCoord(ra={:.4f}, dec={:.4f}, unit='deg'), size={:.4f})"
         return temp.format(
             self.__class__.__name__,
             self.survey,
@@ -162,42 +214,48 @@ class Cutout:
                 f"{self.__class__.__name__} object has no attribute {name}"
             )
 
-    @property
-    def normalisable(self):
-        """Property that is True if data can be colourmap normalised."""
-
-        return np.abs(np.nansum(self.data)) > 0
-
     def _check_data_valid(self):
         """Run checks for invalid or missing data (e.g. all NaN or 0 pixels) from valid FITS file."""
 
-        is_valid = (
-            sum(~np.isnan(self.data).flatten()) > 0 and self.data.flatten().sum() != 0
-        )
+        non_nan_count = sum(~np.isnan(self.data).flatten())
+        non_zero_count = np.abs(np.nansum(self.data))
+
+        is_valid = non_nan_count > 0 and non_zero_count > 0
+
         if not is_valid:
             raise FITSException(f"No data in {self.survey}")
 
     def _get_cutout(self):
-        if os.path.isfile(self.survey):
+        # First check if survey parameter is a FITS image path
+        if os.path.isfile(self.survey) or self.survey.endswith("fits"):
             self._cutout = RawCutout(self)
             self.surveyname = ""
-        else:
-            self.surveyname = SURVEYS.loc[self.survey]["name"]
+            self.is_radio = True
 
-            if SURVEYS.loc[self.survey].local:
-                self._cutout = LocalCutout(self)
-            elif self.survey == "skymapper":
-                self._cutout = SkymapperCutout(self)
-            elif self.survey == "panstarrs":
-                self._cutout = PanSTARRSCutout(self)
-            elif self.survey == "decam":
-                self._cutout = DECamCutout(self)
-            elif self.survey == "iphas":
-                self._cutout = IPHASCutout(self)
-            elif self.survey == "mwats":
-                self._cutout = MWATSCutout(self)
-            else:
-                self._cutout = SkyviewCutout(self)
+            return
+
+        if self.survey not in SURVEYS.index:
+            raise FITSException(f"Survey {self.survey} not in defined in surveys.json.")
+
+        self.surveyname = SURVEYS.loc[self.survey]["name"]
+        self.is_radio = SURVEYS.loc[self.survey].radio
+
+        # Any locally accessible surveys are created with the LocalCutout service
+        local = SURVEYS.loc[self.survey].local
+        if local:
+            self._cutout = LocalCutout(self)
+            return
+
+        # Otherwise use the appropriate API cutout service, use SkyView as default
+        api_service = {
+            "skymapper": SkymapperCutout,
+            "panstarrs": PanSTARRSCutout,
+            "decam": DECamCutout,
+            "iphas": IPHASCutout,
+            "mwats": MWATSCutout,  # Local?
+        }.get(self.survey, SkyviewCutout)
+
+        self._cutout = api_service(self)
 
         return
 
@@ -224,8 +282,8 @@ class Cutout:
             # If epoch still not resolved, disable PM correction
             else:
                 msg = f"Could not detect {self.survey} epoch, PM correction disabled."
-                logger.debug(msg)
-                self.correct_pm = False
+                logger.warning(msg)
+                self.mjd = None
 
                 return
 
@@ -273,10 +331,10 @@ class Cutout:
             lat.set_ticks(number=5)
 
             self.ax.tick_params(axis="both", direction="in", length=5, color=tickcolor)
-            self.padlevel = self.options.get("ylabelpad", 5)
 
         # Set colourmap normalisation
         self.norm = self._get_cmap_normalisation()
+        self.cmap_label = r"Flux Density (mJy beam$^{-1}$)" if self.is_radio else ""
 
     def _get_cmap_normalisation(self):
         """Create colourmap normalisation for cutout map.
@@ -288,10 +346,6 @@ class Cutout:
         or by default ZScaleInterval computes low-contrast limits which
         are made symmetric for Stokes V cutouts.
         """
-
-        # Non-normalisable data should return cmap = None
-        if not self.normalisable:
-            return
 
         # Get min/max based upon ZScale with contrast parameter
         contrast = self.options.get("contrast", 0.2)
@@ -352,7 +406,8 @@ class Cutout:
         charlen = {"-": 0.65, "s": 0.075}
         zeropad = 0.8 + sum([charlen.get(c, 0.5) for c in dec_str])
 
-        self.ax.set_ylabel(ylabel, labelpad=self.padlevel - zeropad)
+        padlevel = self.options.get("ylabelpad", 5)
+        self.ax.set_ylabel(ylabel, labelpad=padlevel - zeropad)
 
     def add_annotation(self, annotation, location="upper left", **kwargs):
         props = {
@@ -429,14 +484,14 @@ class Cutout:
                     zorder=1,
                 )
 
-    def add_psf(self):
+    def add_psf(self, frameon=True):
         try:
             self.bmaj = self.header["BMAJ"] * 3600
             self.bmin = self.header["BMIN"] * 3600
             self.bpa = self.header["BPA"]
         except KeyError:
-            logger.debug(
-                "Header did not contain PSF information, disabling PSF marker."
+            logger.warning(
+                "Header does not contain PSF information, disabling PSF marker."
             )
             return
 
@@ -445,31 +500,32 @@ class Cutout:
         except KeyError:
             cdelt = self.header["CD1_1"]
 
-        if self.options.get("beamsquare"):
-            frame = True
-            facecolor = "k"
-            edgecolor = "k"
-        else:
-            frame = False
-            facecolor = "white"
-            edgecolor = "k"
+        facecolor = "k" if frameon else "white"
+        edgecolor = "k"
 
         x = self.bmin / abs(cdelt) / 3600
         y = self.bmaj / abs(cdelt) / 3600
 
-        self.beam = AnchoredEllipse(
-            self.ax.transData,
+        psf = Ellipse(
+            (0, 0),
             width=x,
             height=y,
             angle=self.bpa,
-            loc=3,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+        )
+
+        psf_transform_box = AuxTransformBox(self.ax.transData)
+        psf_transform_box.add_artist(psf)
+
+        box = AnchoredOffsetbox(
+            child=psf_transform_box,
+            loc="lower left",
             pad=0.5,
             borderpad=0.4,
-            frameon=frame,
+            frameon=frameon,
         )
-        self.beam.ellipse.set(facecolor=facecolor, edgecolor=edgecolor)
-
-        self.ax.add_artist(self.beam)
+        self.ax.add_artist(box)
 
     def switch_to_offsets(self):
         """Transform WCS to a frame centred on the image."""
@@ -543,13 +599,10 @@ class Cutout:
             if ticks:
                 lat.set_ticks_visible(False)
 
-    def plot(self, fig=None, ax=None):
+    def plot(self, fig=None, ax=None, **kwargs):
         """Plot survey data and position overlay."""
 
         self._plot_setup(fig, ax)
-
-        if self.stokes == "v":
-            self.cmap = plt.cm.coolwarm
 
         absmax = max(self.data.max(), self.data.min(), key=abs)
         rms = np.sqrt(np.mean(np.square(self.data)))
@@ -559,15 +612,12 @@ class Cutout:
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
 
-        if self.options.get("bar", True):
+        if self.bar:
             self.fig.colorbar(
                 self.im,
-                label=r"Flux Density (mJy beam$^{-1}$)",
+                label=self.cmap_label,
                 ax=self.ax,
             )
-
-        if self.options.get("psf"):
-            self.add_psf()
 
         self.add_source_ellipse()
 
@@ -603,18 +653,17 @@ class ContourCutout(Cutout):
         # Other ContourCutout specific keywords are also popped
         self.contours = kwargs.pop("contours", "racs-low")
         self.clabels = kwargs.pop("clabels", False)
-        self.bar = kwargs.pop("bar", False)
-        self.band = kwargs.pop("band", "g")
+        bar = kwargs.pop("bar", False)
 
-        self.radio = Cutout(self.contours, position, size, **kwargs)
+        self.radio = Cutout(self.contours, position, size, bar=bar, **kwargs)
 
         super().__init__(survey, position, size, data=data, stokes=stokes, **kwargs)
 
-        if self.correct_pm:
-            self.correct_proper_motion()
-
-    def _add_pm_location(self):
+    def add_pm_location(self):
         """Overplot proper motion correction as an arrow."""
+
+        if not self.correct_pm:
+            raise FITSException("Must run correct_proper_motion method first.")
 
         name = self.simbad.iloc[0]["Object"]
         oldcoord = SkyCoord(self.oldpos.ra, self.oldpos.dec, unit=u.deg)
@@ -622,6 +671,10 @@ class ContourCutout(Cutout):
         oldtime = Time(self.mjd, format="mjd").decimalyear
         newtime = Time(self.radio.mjd, format="mjd").decimalyear
         handles, labels = [], []
+
+        logger.warning(oldcoord)
+        logger.warning(newcoord)
+        logger.warning(oldcoord.separation(newcoord).arcsec)
 
         if oldcoord.separation(newcoord).arcsec < 1:
             self.ax.scatter(
@@ -678,9 +731,10 @@ class ContourCutout(Cutout):
 
         contour_cutout = ContourCutout(
             survey,
-            pos,
+            self.position,
             size=self.size,
             stokes=stokes,
+            contours=survey,
         )
 
         levels = [l * np.nanmax(contour_cutout.data) for l in [0.3, 0.6, 0.9]]
@@ -703,7 +757,7 @@ class ContourCutout(Cutout):
         """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
 
         # Replace pixel data / WCS with copy centred on source
-        contour_background = ContourCutout(
+        contour_background = Cutout(
             self.survey,
             pm_coord,
             self.size,
@@ -734,80 +788,46 @@ class ContourCutout(Cutout):
 
         return
 
-    def correct_proper_motion(self, invert=False, mjd=None):
+    def correct_proper_motion(self, mjd=None):
         """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates."""
 
+        msg = (
+            "Date could not be inferred from {} data header, supply with epoch keyword."
+        )
+        if self.radio.mjd is None:
+            raise FITSException(msg.format("radio"))
+
+        if mjd is None and self.mjd is None:
+            raise FITSException(msg.format("contour"))
+
         # If mjd not set directly, check that it was set from FITS headers in get_cutout method
-        if self.mjd is None:
-            if mjd is None:
-                raise FITSException(
-                    "Date could not be inferred from header, supply with epoch keyword."
-                )
-            else:
-                self.mjd = mjd
+        mjd = self.mjd if mjd is None else mjd
+        obstime = Time(mjd, format="mjd")
+        newtime = Time(self.radio.mjd, format="mjd")
 
-        obstime = Time(self.mjd, format="mjd")
+        # Make simbad query
+        simbad = get_simbad(self.position)
 
-        simbad = Simbad.query_region(self.position, radius=180 * u.arcsec)
-
-        # Catch SIMBAD failure either from None return of query or no stellar type matches in region
-        try:
-            simbad = simbad.to_pandas()
-            pm_types = ["*", "**", "PM*", "EB*", "Star", "PSR", "Pulsar", "Flare*"]
-            simbad = simbad[
-                (simbad["OTYPE"].isin(pm_types)) | (simbad["SP_TYPE"].str.len() > 0)
-            ]
-
-            assert len(simbad) > 0
-
-        except (ValueError, AssertionError):
+        # Check if query returned any stellar matches within range
+        if simbad is None:
             logger.debug("No high proper-motion objects within 180 arcsec.")
-            self.correct_pm = False
-
             return
 
-        # Treat non-existent proper motion parameters as extremely distant objects
-        simbad["PMRA"].fillna(0, inplace=True)
-        simbad["PMDEC"].fillna(0, inplace=True)
-        simbad["PLX_VALUE"].fillna(0.01, inplace=True)
-
-        newtime = Time(self.radio.mjd, format="mjd")
-        pmra = simbad["PMRA"].values * u.mas / u.yr
-        pmdec = simbad["PMDEC"].values * u.mas / u.yr
-
-        dist = Distance(parallax=simbad["PLX_VALUE"].values * u.mas)
-
-        simbad["j2000pos"] = SkyCoord(
-            ra=simbad["RA_d"].values * u.deg,
-            dec=simbad["DEC_d"].values * u.deg,
-            frame="icrs",
-            distance=dist,
-            pm_ra_cosdec=pmra,
-            pm_dec=pmdec,
-            obstime="J2000",
-        )
-
+        # Calculate proper motion corrected position and separation
         datapos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(obstime))
         newpos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(newtime))
-
-        simbad_cols = {
-            "MAIN_ID": "Object",
-            "OTYPE": "Type",
-            "SP_TYPE": "Spectral Type",
-            "DISTANCE_RESULT": "Separation (arcsec)",
-        }
-        simbad = simbad.rename(columns=simbad_cols)
-        simbad = simbad[simbad_cols.values()].copy()
         simbad["PM Corrected Separation (arcsec)"] = np.round(
-            newpos.apply(lambda x: x.separation(self.position).arcsec), 3
+            newpos.apply(lambda x: x.separation(self.position).arcsec),
+            3,
         )
 
         # Only display PM results if object within 15 arcsec
         if simbad["PM Corrected Separation (arcsec)"].min() > 15:
             logger.debug("No PM corrected objects within 15 arcsec")
-            self.correct_pm = False
 
             return
+
+        logger.warning(simbad["PM Corrected Separation (arcsec)"].min())
 
         self.simbad = simbad.sort_values("PM Corrected Separation (arcsec)")
         logger.info(f"SIMBAD results:\n {self.simbad.head()}")
@@ -821,14 +841,11 @@ class ContourCutout(Cutout):
         msg = f"{near_object} proper motion corrected to <{self.pm_coord.ra:.4f}, {self.pm_coord.dec:.4f}>"
         logger.info(msg)
 
-        missing = simbad[simbad["PM Corrected Separation (arcsec)"].isna()]
-        if len(missing) > 0:
-            msg = f"Some objects missing PM data, and may be a closer match than presented:\n {missing}"
-            logger.warning(msg)
+        self.correct_pm = True
 
         return
 
-    def plot(self, fig=None, ax=None):
+    def plot(self, fig=None, ax=None, **kwargs):
         self._plot_setup(fig, ax)
 
         self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
@@ -838,9 +855,9 @@ class ContourCutout(Cutout):
         self.peak = np.nanmax(self.radio.data)
         self.radiorms = np.sqrt(np.mean(np.square(self.radio.data)))
 
-        if self.options.get("rmslevels"):
+        if kwargs.get("rmslevels"):
             self.levels = [self.radiorms * x for x in [3, 6]]
-        elif self.options.get("peaklevels"):
+        elif kwargs.get("peaklevels"):
             midx = int(self.radio.data.shape[0] / 2)
             midy = int(self.radio.data.shape[1] / 2)
             peak = self.radio.data[midx, midy]
@@ -848,11 +865,11 @@ class ContourCutout(Cutout):
         else:
             self.levels = [self.peak * x for x in [0.3, 0.6, 0.9]]
 
-        contour_label = self.options.get("contourlabel", self.contours)
-        contour_width = self.options.get("contourwidth", 3)
+        contour_label = kwargs.get("contourlabel", self.contours)
+        contour_width = kwargs.get("contourwidth", 3)
         contour_color = "k" if self.cmap == "coolwarm" else "orange"
 
-        self.ax.contour(
+        cs = self.ax.contour(
             self.radio.data,
             transform=self.ax.get_transform(self.radio.wcs),
             levels=self.levels,
@@ -865,17 +882,11 @@ class ContourCutout(Cutout):
         self.cs_dict[contour_label] = Line2D([], [], color=contour_color)
 
         if self.clabels:
-            self.ax.clabel(self.cs, fontsize=10, fmt="%1.1f mJy")
+            self.ax.clabel(cs, fontsize=10, fmt="%1.1f mJy")
 
         if self.bar:
             self.fig.colorbar(
                 self.im,
-                label=r"Flux Density (mJy beam$^{-1}$)",
+                label=self.cmap_label,
                 ax=self.ax,
             )
-
-        if self.survey == "panstarrs" and self.options.get("title", True):
-            self.ax.set_title(f"{SURVEYS.loc[self.survey]['name']} ({self.band}-band)")
-
-        if self.correct_pm:
-            self._add_pm_location()

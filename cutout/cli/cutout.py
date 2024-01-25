@@ -281,57 +281,33 @@ def main(
     size *= u.deg
 
     try:
-        if s.radio and not contours:
-            cutout = Cutout(
-                survey,
-                position,
-                size=size,
-                stokes=stokes,
-                tiletype=tiletype,
-                sign=psign,
-                psf=psf,
-                selavy=selavy,
-                neighbours=neighbours,
-                band=band,
-                cmap=cmap,
-                maxnorm=maxnorm,
-                vmax=vmax,
-                vmin=vmin,
-                pm=pm,
-                compact=True,
-                epoch=epoch,
-                fieldname=fieldname,
-                sbid=sbid,
-            )
+        CutoutClass = Cutout if not contours else ContourCutout
 
-        else:
-            if not contours:
-                contours = "racs-low"
+        cutout = CutoutClass(
+            survey,
+            position,
+            size=size,
+            stokes=stokes,
+            tiletype=tiletype,
+            epoch=epoch,
+            fieldname=fieldname,
+            sbid=sbid,
+            sign=psign,
+            cmap=cmap,
+            selavy=selavy,
+            neighbours=neighbours,
+            contours=contours,
+            band=band,
+            vmin=vmin,
+            vmax=vmax,
+            maxnorm=maxnorm,
+            compact=True,
+        )
 
-            cutout = ContourCutout(
-                survey,
-                position,
-                size=size,
-                stokes=stokes,
-                tiletype=tiletype,
-                sign=psign,
-                contours=contours,
-                clabels=clabels,
-                psf=psf,
-                selavy=selavy,
-                neighbours=neighbours,
-                band=band,
-                cmap=cmap,
-                maxnorm=maxnorm,
-                vmax=vmax,
-                vmin=vmin,
-                pm=pm,
-                epoch=epoch,
-                fieldname=fieldname,
-                sbid=sbid,
-            )
+        cutout.plot(clabels=clabels)
 
-        cutout.plot()
+        if pm:
+            cutout.correct_proper_motion()
 
         if corner:
             span = len(cutout.data) / 4
@@ -344,6 +320,9 @@ def main(
                 offset=offset,
             )
             cutout.add_cornermarker(corner)
+
+        if psf:
+            cutout.add_psf()
 
         if annotation:
             cutout.add_annotation(annotation, location="upper left")

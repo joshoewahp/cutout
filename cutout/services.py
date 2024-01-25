@@ -76,9 +76,10 @@ class CutoutService(ABC):
 
         # Set nearest component within positional uncertainty
         # as the target source and all others as neighbours
-        pos_err = (
-            cutout.size if self.local else SURVEYS.loc[cutout.survey].pos_err * u.arcsec
-        )
+        try:
+            pos_err = SURVEYS.loc[cutout.survey].pos_err * u.arcsec
+        except KeyError:
+            pos_err = cutout.options.get("pos_err", 0 * u.arcsec)
 
         if self.components.iloc[0].d2d * u.arcsec < pos_err * 5:
             self.source = self.components.iloc[0].copy()
@@ -113,25 +114,36 @@ class CutoutService(ABC):
             logger.debug(f"Nearest 5 Neighbours \n{neighbour_view.head()}")
 
     def _make_cutout(self, cutout):
-        with fits.open(self.filepath) as hdul:
-            logger.debug(f"Making cutout from FITS image located at:\n{self.filepath}")
+        """General method for creating WCS and Cutout2D objects."""
 
-            header, data = hdul[self.hdulindex].header, hdul[self.hdulindex].data
-            wcs = WCS(header, naxis=2)
+        logger.debug(f"Making cutout from FITS image located at:\n{self.filepath}")
+        try:
+            with fits.open(self.filepath) as hdul:
+                header, data = hdul[self.hdulindex].header, hdul[self.hdulindex].data
+                wcs = WCS(header, naxis=2)
+        except FileNotFoundError:
+            logger.error(f"Image path {self.filepath} does not exist.")
+            raise
+
+        # If present, remove redundant polarisation/frequency axes from data cube
+        if data.ndim == 4:
+            data = data[0, 0, :, :]
 
         try:
-            cutout2d = Cutout2D(data[0, 0, :, :], cutout.position, cutout.size, wcs=wcs)
-        except IndexError:
             cutout2d = Cutout2D(data, cutout.position, cutout.size, wcs=wcs)
         except NoOverlapError:
             field = cutout.options.get("fieldname")
             raise FITSException(
-                f"Field {field} does not contain position {cutout.position.ra:.2f}, {cutout.position.dec:.2f}"
+                f"Field {field} does not contain position {cutout.position}"
             )
 
+        # Set data units to mJy/beam
         self.data = cutout2d.data * 1000
+
+        # Populate cutout header with beam shape parameters
         self.wcs = cutout2d.wcs
         self.header = self.wcs.to_header()
+
         for key in ["BMAJ", "BMIN", "BPA"]:
             if header.get(key):
                 self.header[key] = header[key]
@@ -145,14 +157,15 @@ class RawCutout(CutoutService):
         self.hdulindex = 0
 
     def fetch_sources(self, cutout):
+        if cutout.selavy is None:
+            return
+
         try:
             selavy = SelavyCatalogue(cutout.selavy)
             self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
         except FileNotFoundError:
-            logger.error(
-                f"Selavy files not found at {cutout.selavy}, disabling source ellipses."
-            )
-            return
+            logger.error(f"Selavy file not found at {cutout.selavy}.")
+            raise
 
         self.local = True
         self._find_neighbours(cutout)
@@ -186,11 +199,7 @@ class LocalCutout(CutoutService):
             if sbid:
                 fields = fields[fields.sbid == sbid]
 
-        try:
-            self.field = fields.iloc[0]
-        except IndexError:
-            raise FITSException(f"Field {fieldname} not located")
-
+        self.field = fields.iloc[0]
         self.filepath = self.field[f"{cutout.stokes}_path"]
 
     def fetch_sources(self, cutout):
@@ -210,9 +219,11 @@ class LocalCutout(CutoutService):
             )
             self.components = selavy.cone_search(cutout.position, 0.5 * cutout.size)
         except FileNotFoundError:
-            logger.debug(
+            logger.warning(
                 f"Selavy files not found for {cutout.survey} Stokes {cutout.stokes}, disabling source ellipses."
             )
+            self.components = None
+
             return
 
         self._find_neighbours(cutout)
@@ -272,7 +283,7 @@ class PanSTARRSCutout(CutoutService):
         pixsize = int(cutout.size.value * 3600 / 0.5 / 2)
         service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
         url = f"{service}?ra={cutout.ra}&dec={cutout.dec}&size={pixsize}&format=fits&filters=grizy"
-        table = Table.read(url, format="ascii").to_pandas()
+        table = Table.read(url, format="ascii.basic").to_pandas()
 
         # Check cutouts exist at position
         msg = f"No PanSTARRS1 image at {cutout.ra:.2f}, {cutout.dec:.2f}"
@@ -284,6 +295,7 @@ class PanSTARRSCutout(CutoutService):
             f"?ra={cutout.ra}&dec={cutout.dec}&size={pixsize}&format=fits&red="
         )
         link = urlbase + table[table["filter"] == cutout.band].iloc[0].filename
+
         img = requests.get(link, allow_redirects=True)
 
         if not os.path.exists(self.filepath):
@@ -306,8 +318,8 @@ class DECamCutout(CutoutService):
             max_size = pixsize * 0.262 / 3600
             logger.debug(f"Using maximum DECam LS cutout pixsize of {max_size:.3f} deg")
 
-        link = f"https://www.legacysurvey.org/viewer/fits-cutout?ra={cutout.ra}&dec={cutout.dec}"
-        link += f"&size={pixsize}&layer=ls-dr9&pixscale=0.262&bands={cutout.band}"
+        link = f"https://www.legacysurvey.org/viewer/cutout.fits?ra={cutout.ra}&dec={cutout.dec}"
+        link += f"&size={pixsize}&layer=ls-dr10&pixscale=0.262&bands={cutout.band}"
         img = requests.get(link)
 
         if not os.path.exists(self.filepath):
@@ -340,8 +352,6 @@ class IPHASCutout(CutoutService):
         if len(table) == 0:
             raise exc
         table = table[0].to_pandas().sort_values("_r")
-        if table.empty:
-            raise exc
 
         # Remove poor quality observations
         table = table[(table.rDetectionID != "") & (table.fieldGrade != "D")]
@@ -366,8 +376,9 @@ class MWATSCutout(CutoutService):
     def __init__(self, cutout):
         self.plot_source = False
         self.plot_neighbours = False
+        self.hdulindex = 0
 
-        mwats_selavy_path = SURVEYS.loc[cutout.survey][f"selavy_path_i"]
+        mwats_selavy_path = SURVEYS.loc[cutout.survey]["data_path"]
         self.mwats = SelavyCatalogue.from_aegean(mwats_selavy_path + "mwats_raw.parq")
 
         self.fetch_sources(cutout)
@@ -382,10 +393,12 @@ class MWATSCutout(CutoutService):
             raise FITSException(f"No MWATS images at {cutout.ra:.4f} {cutout.dec:.4f}")
 
         nearest = components.sort_values("d2d", ascending=True).iloc[0]
-        mwats_image_path = SURVEYS.loc[cutout.survey][f"image_path_{cutout.stokes}"]
+        mwats_image_path = SURVEYS.loc[cutout.survey]["data_path"]
 
-        self.filepath = mwats_image_path + nearest.image.replace(
-            "_I", f"_{cutout.stokes.upper()}"
+        self.filepath = (
+            mwats_image_path
+            + "/IMAGES/"
+            + nearest.image.replace("_I", f"_{cutout.stokes.upper()}")
         )
 
     def fetch_sources(self, cutout):
@@ -411,12 +424,8 @@ class SkyviewCutout(CutoutService):
                     radius=cutout.size,
                     show_progress=False,
                 )[0][0]
-            except IndexError:
-                raise FITSException("Skyview image list returned empty.")
-            except ValueError:
-                raise FITSException(f"{cutout.survey} is not a valid SkyView survey.")
-            except HTTPError:
-                raise FITSException("No response from Skyview server.")
+            except (IndexError, HTTPError) as e:
+                raise FITSException(f"Skyview cutout failed: {e}.")
 
             with open(self.filepath, "wb") as f:
                 hdul.writeto(f)
