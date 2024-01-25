@@ -5,23 +5,40 @@ description = ""
 authors = ["Joshua <jpri6587@sydney.edu.au>"]
 
 [tool.poetry.dependencies]
-python = ">=3.9"
+python = "^3.11"
 numpy = "^1.22.2"
 matplotlib = "^3.5.1"
 astropy = "^6.0.0"
 astroquery = "^0.4.6"
+astroutils = {git = "https://github.com/joshoewahp/astroutils.git"}
 pandas = "^2.1.4"
 click = "^8.0.4"
 regions = "^0.7"
 
-[tool.poetry.dev-dependencies]
-pytest = "^7.1.1"
-pytest-cov = "^3.0.0"
-pytest-mock = "^3.7.0"
-
 [tool.poetry.scripts]
 cutout = "cutout.cli.cutout:main"
 
+
+[tool.poetry.group.dev.dependencies]
+pytest-cov = "4.1.0"
+pytest = "^7.4.3"
+pytest-mock = "^3.12.0"
+isort = "^5.13.2"
+black = "^23.12.1"
+mypy = "^1.8.0"
+coverage = "^7.4.0"
+flake8 = "^6.1.0"
+pre-commit = "^3.6.0"
+
+[tool.coverage.run]
+omit = [
+    "tests/conftest.py",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.black]
 line-length = 88
