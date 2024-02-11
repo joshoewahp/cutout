@@ -185,6 +185,9 @@ class Cutout:
         self.selavy = kwargs.pop("selavy", None)
         self.correct_pm = False
 
+        # Create contour attribute dictionary
+        self.cs_dict = defaultdict(dict)
+
         self.options = kwargs
 
         try:
@@ -423,6 +426,42 @@ class Cutout:
         text = AnchoredText(annotation, loc=location, frameon=False, prop=props)
 
         self.ax.add_artist(text)
+
+    def add_contours(self, survey, pos, shift_epoch=None, **kwargs):
+        stokes = kwargs.get("stokes", "i")
+        colors = kwargs.get("colors", "rebeccapurple")
+        label = kwargs.get("contourlabel", survey)
+
+        contour_cutout = ContourCutout(
+            survey,
+            self.position,
+            size=self.size,
+            stokes=stokes,
+            contours=survey,
+        )
+
+        datamax = np.nanmax(contour_cutout.data)
+        perc_levels = np.array([0.3, 0.6, 0.9]) * datamax
+        levels = kwargs.get("levels", perc_levels)
+
+        if min(levels) > datamax:
+            raise ValueError(
+                "All contour levels exceed maximum data value of {datamax:.2f}."
+            )
+
+        if shift_epoch:
+            contour_cutout.shift_coordinate_grid(pos, shift_epoch)
+
+        self.ax.contour(
+            contour_cutout.data,
+            colors=colors,
+            linewidths=self.options.get("contourwidth", 3),
+            transform=self.ax.get_transform(contour_cutout.wcs),
+            levels=levels,
+        )
+
+        # Add to contour artist collection for legend label access
+        self.cs_dict[label] = Line2D([], [], color=colors)
 
     def add_cornermarker(self, marker):
         if not marker.in_pixel_range(0, len(self.data)):
@@ -724,35 +763,6 @@ class ContourCutout(Cutout):
 
             self.ax.legend(handles, labels)
 
-    def add_contours(self, survey, pos, shift_epoch=None, **kwargs):
-        stokes = kwargs.get("stokes", "i")
-        colors = kwargs.get("colors", "rebeccapurple")
-        label = kwargs.get("contourlabel", survey)
-
-        contour_cutout = ContourCutout(
-            survey,
-            self.position,
-            size=self.size,
-            stokes=stokes,
-            contours=survey,
-        )
-
-        levels = [l * np.nanmax(contour_cutout.data) for l in [0.3, 0.6, 0.9]]
-
-        if shift_epoch:
-            contour_cutout.shift_coordinate_grid(pos, shift_epoch)
-
-        self.ax.contour(
-            contour_cutout.data,
-            colors=colors,
-            linewidths=self.options.get("contourwidth", 3),
-            transform=self.ax.get_transform(contour_cutout.wcs),
-            levels=levels,
-        )
-
-        # Add to contour artist collection for legend label access
-        self.cs_dict[label] = Line2D([], [], color=colors)
-
     def shift_coordinate_grid(self, pm_coord, shift_epoch):
         """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
 
@@ -878,7 +888,6 @@ class ContourCutout(Cutout):
         )
 
         # Contour artist is placed inside self.cs_dict for external label / legend access
-        self.cs_dict = defaultdict(dict)
         self.cs_dict[contour_label] = Line2D([], [], color=contour_color)
 
         if self.clabels:

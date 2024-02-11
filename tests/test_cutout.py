@@ -385,13 +385,25 @@ def test_contourcutout_add_pm_location_bad_order_raises_error(
 )
 def test_add_contours(shift_epoch, cutout, position):
     c = cutout(contours=True)
-
     c.plot()
+
     c.add_contours(
         "tests/data/image.i.SB9602.cont.taylor.0.restored.fits",
         position("pm"),
         shift_epoch=shift_epoch,
     )
+
+
+def test_add_contours_bad_levels_raise_error(cutout, position):
+    c = cutout(contours=True)
+    c.plot()
+
+    with pytest.raises(ValueError):
+        c.add_contours(
+            "tests/data/image.i.SB9602.cont.taylor.0.restored.fits",
+            position("pm"),
+            levels=[500, 1000],
+        )
 
 
 def test_shift_coordinate_grid(cutout, position):
