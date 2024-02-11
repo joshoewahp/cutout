@@ -13,14 +13,14 @@ import astropy.units as u
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
-from astropy.coordinates import Distance, SkyCoord
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 from astropy.visualization import ImageNormalize, ZScaleInterval
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.wcs.utils import proj_plane_pixel_scales
-from astroquery.simbad import Simbad
 from astroutils.io import FITSException, get_surveys
+from astroutils.query import query_simbad
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnchoredOffsetbox, AnchoredText, AuxTransformBox
 from matplotlib.patches import Ellipse
@@ -45,68 +45,8 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, append=True)
 SURVEYS = get_surveys()
 SURVEYS.set_index("survey", inplace=True)
 
-Simbad.add_votable_fields(
-    "otype",
-    "ra(d)",
-    "dec(d)",
-    "parallax",
-    "pmdec",
-    "pmra",
-    "distance",
-    "sptype",
-    "distance_result",
-)
 
 logger = logging.getLogger(__name__)
-
-
-def get_simbad(position):
-    simbad = Simbad.query_region(position, radius=180 * u.arcsec)
-
-    # Catch SIMBAD failure either from None return of query or no stellar type matches in region
-    try:
-        simbad = simbad.to_pandas()
-        pm_types = ["*", "**", "PM*", "EB*", "Star", "PSR", "Pulsar", "Flare*"]
-        simbad = simbad[
-            (simbad["OTYPE"].isin(pm_types)) | (simbad["SP_TYPE"].str.len() > 0)
-        ]
-
-        assert len(simbad) > 0
-
-    except (ValueError, AssertionError):
-        return
-
-    # Treat non-existent proper motion parameters as extremely distant objects
-    simbad["PMRA"].fillna(0, inplace=True)
-    simbad["PMDEC"].fillna(0, inplace=True)
-    simbad["PLX_VALUE"].fillna(0.01, inplace=True)
-
-    pmra = simbad["PMRA"].values * u.mas / u.yr
-    pmdec = simbad["PMDEC"].values * u.mas / u.yr
-
-    dist = Distance(parallax=simbad["PLX_VALUE"].values * u.mas)
-
-    simbad["j2000pos"] = SkyCoord(
-        ra=simbad["RA_d"].values * u.deg,
-        dec=simbad["DEC_d"].values * u.deg,
-        frame="icrs",
-        distance=dist,
-        pm_ra_cosdec=pmra,
-        pm_dec=pmdec,
-        obstime="J2000",
-    )
-
-    simbad_cols = {
-        "MAIN_ID": "Object",
-        "OTYPE": "Type",
-        "SP_TYPE": "Spectral Type",
-        "DISTANCE_RESULT": "Separation (arcsec)",
-        "j2000pos": "j2000pos",
-    }
-    simbad = simbad.rename(columns=simbad_cols)
-    simbad = simbad[simbad_cols.values()].copy()
-
-    return simbad
 
 
 @dataclass
@@ -163,10 +103,7 @@ class CornerMarker:
     def in_pixel_range(self, pixmin: int, pixmax: int) -> bool:
         """Check whether the pixel coordinate of marker is in a valid range."""
 
-        if any(i < pixmin or i > pixmax or np.isnan(i) for i in self.datapos):
-            return False
-
-        return True
+        return self.wcs.footprint_contains(self.position)
 
 
 class Cutout:
@@ -184,6 +121,7 @@ class Cutout:
         self.band = kwargs.pop("band", "g")
         self.selavy = kwargs.pop("selavy", None)
         self.correct_pm = False
+        self.offsets = False
 
         # Create contour attribute dictionary
         self.cs_dict = defaultdict(dict)
@@ -193,7 +131,7 @@ class Cutout:
         try:
             self._get_cutout()
             self._determine_epoch()
-        except FileNotFoundError as e:
+        except (AssertionError, FITSException, FileNotFoundError) as e:
             msg = f"{survey} failed: {e}"
             raise FITSException(msg)
 
@@ -286,14 +224,14 @@ class Cutout:
             else:
                 msg = f"Could not detect {self.survey} epoch, PM correction disabled."
                 logger.warning(msg)
-                self.mjd = None
+                self.obstime = None
 
                 return
 
         else:
             epochtype = "mjd" if epoch > 3000 else "decimalyear"
 
-        self.mjd = Time(epoch, format=epochtype).mjd
+        self.obstime = Time(epoch, format=epochtype)
 
     def _plot_setup(self, fig, ax):
         """Create figure and determine normalisation parameters."""
@@ -319,7 +257,7 @@ class Cutout:
         self.set_ylabel("Dec (J2000)")
 
         # Set compact or extended label / tick configuration
-        if self.options.get("compact", False):
+        if self.options.get("compact", True):
             tickcolor = (
                 "k" if np.nanmax(np.abs(self.data)) == np.nanmax(self.data) else "gray"
             )
@@ -334,6 +272,12 @@ class Cutout:
             lat.set_ticks(number=5)
 
             self.ax.tick_params(axis="both", direction="in", length=5, color=tickcolor)
+
+        # Change ticklabels to arcsecond offsets in offset frame
+        if self.offsets:
+            self.ax.coords[0].set_coord_type("longitude", coord_wrap=180 * u.deg)
+            self.ax.coords[0].set_major_formatter("s")
+            self.ax.coords[1].set_major_formatter("s")
 
         # Set colourmap normalisation
         self.norm = self._get_cmap_normalisation()
@@ -427,18 +371,23 @@ class Cutout:
 
         self.ax.add_artist(text)
 
-    def add_contours(self, survey, pos, shift_epoch=None, **kwargs):
+    def add_contours(self, survey, position, shift_epoch=None, **kwargs):
         stokes = kwargs.get("stokes", "i")
-        colors = kwargs.get("colors", "rebeccapurple")
+        colors = kwargs.get("colors", "darkorange")
         label = kwargs.get("contourlabel", survey)
 
-        contour_cutout = ContourCutout(
+        contour_cutout = Cutout(
             survey,
             self.position,
             size=self.size,
             stokes=stokes,
-            contours=survey,
         )
+
+        # If using offset frame, align contours to data
+        if self.offsets:
+            r_crpix = contour_cutout.wcs.wcs_world2pix(self.ra, self.dec, 1)
+            contour_cutout.wcs.wcs.crpix = [r_crpix[0], r_crpix[1]]
+            contour_cutout.wcs.wcs.crval = [0, 0]
 
         datamax = np.nanmax(contour_cutout.data)
         perc_levels = np.array([0.3, 0.6, 0.9]) * datamax
@@ -450,9 +399,9 @@ class Cutout:
             )
 
         if shift_epoch:
-            contour_cutout.shift_coordinate_grid(pos, shift_epoch)
+            contour_cutout.shift_coordinate_grid(position, shift_epoch)
 
-        self.ax.contour(
+        cs = self.ax.contour(
             contour_cutout.data,
             colors=colors,
             linewidths=self.options.get("contourwidth", 3),
@@ -464,7 +413,8 @@ class Cutout:
         self.cs_dict[label] = Line2D([], [], color=colors)
 
     def add_cornermarker(self, marker):
-        if not marker.in_pixel_range(0, len(self.data)):
+        in_pixel_range = self.wcs.footprint_contains(marker.position)
+        if not in_pixel_range:
             msga = (
                 "Cornermarker will be disabled as RA and Dec are outside of data range."
             )
@@ -475,17 +425,28 @@ class Cutout:
         self.ax.add_artist(marker.raline)
         self.ax.add_artist(marker.decline)
 
+    def add_markers(self, coords, **kwargs):
+        in_pixel_range = self.wcs.footprint_contains(coords)
+        coords = coords[in_pixel_range]
+
+        self.ax.scatter(
+            coords.ra,
+            coords.dec,
+            transform=self.ax.get_transform("world"),
+            **kwargs,
+        )
+
     def add_source_ellipse(self):
         """Overplot dashed line ellipses for the nearest source within positional uncertainty."""
 
         # Add ellipse for source within positional uncertainty
         if self.plot_source:
             source_colour = "k" if self.stokes == "v" else "springgreen"
-            pos = SkyCoord(
+            position = SkyCoord(
                 ra=self.source.ra_deg_cont, dec=self.source.dec_deg_cont, unit="deg"
             )
             self.sourcepos = EllipseSkyRegion(
-                pos,
+                position,
                 width=self.source.maj_axis * u.arcsec,
                 height=self.source.min_axis * u.arcsec,
                 angle=(self.source.pos_ang + 90) * u.deg,
@@ -503,13 +464,13 @@ class Cutout:
         if self.plot_neighbours:
             neighbour_colour = "k" if self.stokes == "v" else "rebeccapurple"
             for _, neighbour in self.neighbours.iterrows():
-                pos = SkyCoord(
+                position = SkyCoord(
                     ra=neighbour.ra_deg_cont,
                     dec=neighbour.dec_deg_cont,
                     unit="deg",
                 )
                 n = EllipseSkyRegion(
-                    pos,
+                    position,
                     width=neighbour.maj_axis * u.arcsec,
                     height=neighbour.min_axis * u.arcsec,
                     angle=(neighbour.pos_ang + 90) * u.deg,
@@ -618,6 +579,41 @@ class Cutout:
 
         self.offsets = True
 
+    def shift_coordinate_grid(self, pm_coord, shift_epoch):
+        """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
+
+        # Replace pixel data / WCS with copy centred on source
+        contour_background = Cutout(
+            self.survey,
+            pm_coord,
+            self.size,
+            band=self.band,
+        )
+        self.data = contour_background.data
+        self.wcs = contour_background.wcs
+
+        # Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec
+        try:
+            pm_ra = pm_coord.pm_ra
+        except AttributeError:
+            pm_ra = pm_coord.pm_ra_cosdec
+
+        # Update CRVAL coordinates based on propagated proper motion
+        orig_pos = SkyCoord(
+            ra=self.wcs.wcs.crval[0] * u.deg,
+            dec=self.wcs.wcs.crval[1] * u.deg,
+            frame="icrs",
+            distance=pm_coord.distance,
+            pm_ra_cosdec=pm_ra,
+            pm_dec=pm_coord.pm_dec,
+            obstime=pm_coord.obstime,
+        )
+        newpos = orig_pos.apply_space_motion(shift_epoch)
+
+        self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
+
+        return
+
     def hide_coords(self, axis="both", ticks=True, labels=True):
         """Remove all coordinates and identifying information."""
 
@@ -637,6 +633,26 @@ class Cutout:
                 lat.set_ticklabel_visible(False)
             if ticks:
                 lat.set_ticks_visible(False)
+
+    def query_simbad(self, epoch: Time = None):
+        """Query SIMBAD and apply proper motion corrections."""
+
+        if epoch is None and self.obstime is None:
+            raise FITSException(
+                "Date could not be inferred from data header, supply with epoch keyword."
+            )
+
+        # If obstime not set directly, check that it was set from FITS headers in get_cutout method
+        obstime = self.obstime if epoch is None else epoch
+        radius = max(180 * u.arcsec, self.size)
+
+        # Make simbad query
+        simbad, newpos = query_simbad(self.position, radius=radius, obstime=obstime)
+
+        if simbad is None:
+            return
+
+        return simbad, newpos
 
     def plot(self, fig=None, ax=None, **kwargs):
         """Plot survey data and position overlay."""
@@ -680,222 +696,3 @@ class Cutout:
             self._align_ylabel(ylabel)
         else:
             self.ax.set_ylabel(ylabel)
-
-
-class ContourCutout(Cutout):
-    def __init__(self, survey, position, size, **kwargs):
-        # If custom data provided for ContourCutout, pop from kwargs
-        # to avoid being read as radio data by Cutout sub-call.
-        data = kwargs.pop("data", None)
-        stokes = kwargs.pop("stokes", "i")
-
-        # Other ContourCutout specific keywords are also popped
-        self.contours = kwargs.pop("contours", "racs-low")
-        self.clabels = kwargs.pop("clabels", False)
-        bar = kwargs.pop("bar", False)
-
-        self.radio = Cutout(self.contours, position, size, bar=bar, **kwargs)
-
-        super().__init__(survey, position, size, data=data, stokes=stokes, **kwargs)
-
-    def add_pm_location(self):
-        """Overplot proper motion correction as an arrow."""
-
-        if not self.correct_pm:
-            raise FITSException("Must run correct_proper_motion method first.")
-
-        name = self.simbad.iloc[0]["Object"]
-        oldcoord = SkyCoord(self.oldpos.ra, self.oldpos.dec, unit=u.deg)
-        newcoord = SkyCoord(self.pm_coord.ra, self.pm_coord.dec, unit=u.deg)
-        oldtime = Time(self.mjd, format="mjd").decimalyear
-        newtime = Time(self.radio.mjd, format="mjd").decimalyear
-        handles, labels = [], []
-
-        logger.warning(oldcoord)
-        logger.warning(newcoord)
-        logger.warning(oldcoord.separation(newcoord).arcsec)
-
-        if oldcoord.separation(newcoord).arcsec < 1:
-            self.ax.scatter(
-                self.pm_coord.ra,
-                self.pm_coord.dec,
-                marker="x",
-                s=200,
-                color="r",
-                transform=self.ax.get_transform("world"),
-                label=f"{name} position at J{newtime:.2f}",
-            )
-            self.ax.scatter(
-                self.oldpos.ra,
-                self.oldpos.dec,
-                marker="x",
-                s=200,
-                color="b",
-                transform=self.ax.get_transform("world"),
-                label=f"{name} position at J{oldtime:.2f}",
-            )
-            self.ax.legend()
-        else:
-            dra, ddec = oldcoord.spherical_offsets_to(newcoord)
-            self.ax.arrow(
-                self.oldpos.ra.deg,
-                self.oldpos.dec.deg,
-                dra.deg,
-                ddec.deg,
-                width=8e-5,
-                color="r",
-                length_includes_head=True,
-                zorder=10,
-                transform=self.ax.get_transform("world"),
-            )
-
-            arrow_handle = Line2D(
-                [],
-                [],
-                ls="none",
-                marker=r"$\leftarrow$",
-                markersize=10,
-                color="r",
-            )
-            arrow_label = f"Proper motion from J{oldtime:.2f}-J{newtime:.2f}"
-            handles.append(arrow_handle)
-            labels.append(arrow_label)
-
-            self.ax.legend(handles, labels)
-
-    def shift_coordinate_grid(self, pm_coord, shift_epoch):
-        """Shift WCS of pixel data to epoch based upon the proper motion encoded in pm_coord."""
-
-        # Replace pixel data / WCS with copy centred on source
-        contour_background = Cutout(
-            self.survey,
-            pm_coord,
-            self.size,
-            band=self.band,
-        )
-        self.data = contour_background.data
-        self.wcs = contour_background.wcs
-
-        # Astropy for some reason can't decide on calling this pm_ra or pm_ra_cosdec
-        try:
-            pm_ra = pm_coord.pm_ra
-        except AttributeError as e:
-            pm_ra = pm_coord.pm_ra_cosdec
-
-        # Update CRVAL coordinates based on propagated proper motion
-        orig_pos = SkyCoord(
-            ra=self.wcs.wcs.crval[0] * u.deg,
-            dec=self.wcs.wcs.crval[1] * u.deg,
-            frame="icrs",
-            distance=pm_coord.distance,
-            pm_ra_cosdec=pm_ra,
-            pm_dec=pm_coord.pm_dec,
-            obstime=pm_coord.obstime,
-        )
-        newpos = orig_pos.apply_space_motion(shift_epoch)
-
-        self.wcs.wcs.crval = [newpos.ra.deg, newpos.dec.deg]
-
-        return
-
-    def correct_proper_motion(self, mjd=None):
-        """Check SIMBAD for nearby star or pulsar and plot a cross at corrected coordinates."""
-
-        msg = (
-            "Date could not be inferred from {} data header, supply with epoch keyword."
-        )
-        if self.radio.mjd is None:
-            raise FITSException(msg.format("radio"))
-
-        if mjd is None and self.mjd is None:
-            raise FITSException(msg.format("contour"))
-
-        # If mjd not set directly, check that it was set from FITS headers in get_cutout method
-        mjd = self.mjd if mjd is None else mjd
-        obstime = Time(mjd, format="mjd")
-        newtime = Time(self.radio.mjd, format="mjd")
-
-        # Make simbad query
-        simbad = get_simbad(self.position)
-
-        # Check if query returned any stellar matches within range
-        if simbad is None:
-            logger.debug("No high proper-motion objects within 180 arcsec.")
-            return
-
-        # Calculate proper motion corrected position and separation
-        datapos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(obstime))
-        newpos = simbad.j2000pos.apply(lambda x: x.apply_space_motion(newtime))
-        simbad["PM Corrected Separation (arcsec)"] = np.round(
-            newpos.apply(lambda x: x.separation(self.position).arcsec),
-            3,
-        )
-
-        # Only display PM results if object within 15 arcsec
-        if simbad["PM Corrected Separation (arcsec)"].min() > 15:
-            logger.debug("No PM corrected objects within 15 arcsec")
-
-            return
-
-        logger.warning(simbad["PM Corrected Separation (arcsec)"].min())
-
-        self.simbad = simbad.sort_values("PM Corrected Separation (arcsec)")
-        logger.info(f"SIMBAD results:\n {self.simbad.head()}")
-
-        nearest = self.simbad["PM Corrected Separation (arcsec)"].idxmin()
-
-        self.oldpos = datapos[nearest]
-        self.pm_coord = newpos[nearest]
-
-        near_object = self.simbad.loc[nearest].Object
-        msg = f"{near_object} proper motion corrected to <{self.pm_coord.ra:.4f}, {self.pm_coord.dec:.4f}>"
-        logger.info(msg)
-
-        self.correct_pm = True
-
-        return
-
-    def plot(self, fig=None, ax=None, **kwargs):
-        self._plot_setup(fig, ax)
-
-        self.im = self.ax.imshow(self.data, cmap=self.cmap, norm=self.norm)
-
-        # Plot radio contours
-        self.radio.data *= self.sign
-        self.peak = np.nanmax(self.radio.data)
-        self.radiorms = np.sqrt(np.mean(np.square(self.radio.data)))
-
-        if kwargs.get("rmslevels"):
-            self.levels = [self.radiorms * x for x in [3, 6]]
-        elif kwargs.get("peaklevels"):
-            midx = int(self.radio.data.shape[0] / 2)
-            midy = int(self.radio.data.shape[1] / 2)
-            peak = self.radio.data[midx, midy]
-            self.levels = np.logspace(np.log10(0.3 * peak), np.log10(0.9 * peak), 3)
-        else:
-            self.levels = [self.peak * x for x in [0.3, 0.6, 0.9]]
-
-        contour_label = kwargs.get("contourlabel", self.contours)
-        contour_width = kwargs.get("contourwidth", 3)
-        contour_color = "k" if self.cmap == "coolwarm" else "orange"
-
-        cs = self.ax.contour(
-            self.radio.data,
-            transform=self.ax.get_transform(self.radio.wcs),
-            levels=self.levels,
-            colors=contour_color,
-            linewidths=contour_width,
-        )
-
-        # Contour artist is placed inside self.cs_dict for external label / legend access
-        self.cs_dict[contour_label] = Line2D([], [], color=contour_color)
-
-        if self.clabels:
-            self.ax.clabel(cs, fontsize=10, fmt="%1.1f mJy")
-
-        if self.bar:
-            self.fig.colorbar(
-                self.im,
-                label=self.cmap_label,
-                ax=self.ax,
-            )

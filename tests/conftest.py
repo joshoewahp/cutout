@@ -9,7 +9,7 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
 
-from cutout import ContourCutout, Cutout
+from cutout import Cutout
 
 
 @pytest.fixture
@@ -79,25 +79,6 @@ def cleanup_pyplot():
     plt.close("all")
 
 
-@pytest.fixture
-def mock_simbad(position):
-    def _simbad(objects):
-        simbad = pd.DataFrame(
-            {
-                "Object": ["no_pm", "pm", "pm_offset"],
-                "j2000pos": [
-                    position("no_pm"),
-                    position("pm"),
-                    position("pm_offset"),
-                ],
-            }
-        )
-        simbad = simbad[simbad.Object.isin(objects)]
-        return simbad
-
-    return _simbad
-
-
 @pytest.fixture()
 def image_products():
     with fits.open("tests/data/image.i.SB9602.cont.taylor.0.restored.fits") as hdul:
@@ -136,7 +117,7 @@ def data_path():
 
 @pytest.fixture
 def cutout(position, data_path):
-    def _cutout(contours=None, coord="no_pm", options=None):
+    def _cutout(coord="no_pm", options=None):
         if not options:
             options = dict()
 
@@ -144,19 +125,11 @@ def cutout(position, data_path):
 
         impath, selpath = data_path(coord)
 
-        if contours:
-            contours = impath
-
-            CutoutClass = ContourCutout
-        else:
-            CutoutClass = Cutout
-
-        c = CutoutClass(
+        c = Cutout(
             impath,
             pos,
             size=0.01 * u.deg,
             selavy=selpath,
-            contours=contours,
             **options,
         )
 

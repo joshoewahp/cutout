@@ -4,7 +4,7 @@ import astropy.units as u
 import pytest
 from astropy.coordinates import SkyCoord
 
-from cutout import ContourCutout
+from cutout import Cutout
 
 cache_path = "tests/data/cache/"
 
@@ -22,7 +22,7 @@ cache_path = "tests/data/cache/"
         ("2massj", 12.68, -25.3, 0),
     ],
 )
-def test_api_contour_cutouts(
+def test_api_cutouts(
     survey,
     ra,
     dec,
@@ -41,9 +41,8 @@ def test_api_contour_cutouts(
     mocker.patch("cutout.services.cutout_cache", new=Path(cache_path))
     mocker.patch("cutout.services.find_fields", return_value=mocked_fields[field_idx])
 
-    ContourCutout(
+    Cutout(
         survey,
         position,
         size,
-        contours="gw1",
     )

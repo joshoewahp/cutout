@@ -7,7 +7,7 @@ from astropy.coordinates import SkyCoord
 from astroutils.io import FITSException, get_surveys
 from astroutils.source import SelavyCatalogue
 
-from cutout import ContourCutout, Cutout
+from cutout import Cutout
 
 SURVEYS = get_surveys()
 
@@ -246,21 +246,20 @@ def test_local_cutout_selavy_ellipses(components, params, mocker):
 
 @pytest.mark.filterwarnings("ignore::astropy.wcs.FITSFixedWarning")
 @pytest.mark.parametrize(
-    "survey, ra, dec, field_idx",
+    "survey, ra, dec",
     [
-        ("skymapper", 12.68, -25.3, 0),
-        ("panstarrs", 12.68, -25.3, 0),
-        ("decam", 12.68, -25.3, 0),
-        ("iphas", 96.9, 11.5, 1),
+        ("skymapper", 12.68, -25.3),
+        ("panstarrs", 12.68, -25.3),
+        ("decam", 12.68, -25.3),
+        ("iphas", 96.9, 11.5),
         # 2MASS to test SkyView
-        ("2massj", 12.68, -25.3, 0),
+        ("2massj", 12.68, -25.3),
     ],
 )
-def test_api_contour_cutouts(
+def test_api_cutouts(
     survey,
     ra,
     dec,
-    field_idx,
     mocker,
     cleanup_cache,
 ):
@@ -272,30 +271,28 @@ def test_api_contour_cutouts(
     position = SkyCoord(ra=ra, dec=dec, unit="deg")
 
     mocker.patch("cutout.services.cutout_cache", new=Path(cache_path))
-    mocker.patch("cutout.services.find_fields", return_value=mocked_fields[field_idx])
+    # mocker.patch("cutout.services.find_fields", return_value=mocked_fields[field_idx])
 
-    ContourCutout(
+    Cutout(
         survey,
         position,
         size,
-        contours="gw1",
     )
 
 
 @pytest.mark.parametrize(
-    "survey, ra, dec, field_idx",
+    "survey, ra, dec",
     [
-        ("skymapper", 12.68, 55.3, 0),
-        ("panstarrs", 12.68, 55.3, 0),
-        ("decam", 12.68, 55.3, 0),
-        ("iphas", 12.38, -25.3, 0),
+        ("skymapper", 12.68, 55.3),
+        ("panstarrs", 12.68, -55.3),
+        ("decam", 12.68, 55.3),
+        # ("iphas", 12.38, -25.3),
     ],
 )
-def test_api_contour_cutouts_out_of_zone(
+def test_api_cutouts_out_of_zone(
     survey,
     ra,
     dec,
-    field_idx,
     mocker,
     cleanup_cache,
 ):
@@ -307,14 +304,13 @@ def test_api_contour_cutouts_out_of_zone(
     position = SkyCoord(ra=ra, dec=dec, unit="deg")
 
     mocker.patch("cutout.services.cutout_cache", new=Path(cache_path))
-    mocker.patch("cutout.services.find_fields", return_value=mocked_fields[field_idx])
+    # mocker.patch("cutout.services.find_fields", return_value=mocked_fields[field_idx])
 
     with pytest.raises(FITSException):
-        ContourCutout(
+        Cutout(
             survey,
             position,
             size,
-            contours="gw1",
         )
 
 
@@ -343,7 +339,6 @@ def test_bad_position_raises_error(
             survey,
             position,
             size=0.05 * u.deg,
-            contours="gw1",
         )
 
 
@@ -354,11 +349,10 @@ def test_skyview_invalid_survey_raises_error(mocker, cleanup_cache):
     mocker.patch("cutout.services.find_fields", return_value=mocked_fields[0])
 
     with pytest.raises(FITSException):
-        ContourCutout(
+        Cutout(
             "2massq",
             position,
             size=0.05 * u.deg,
-            contours="gw1",
         )
 
 

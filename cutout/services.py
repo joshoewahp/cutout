@@ -121,9 +121,14 @@ class CutoutService(ABC):
             with fits.open(self.filepath) as hdul:
                 header, data = hdul[self.hdulindex].header, hdul[self.hdulindex].data
                 wcs = WCS(header, naxis=2)
-        except FileNotFoundError:
-            logger.error(f"Image path {self.filepath} does not exist.")
-            raise
+        except (OSError, FileNotFoundError):
+            logger.error(f"Image path {self.filepath} does not exist or corrupted.")
+
+            # Clear corrupted file with a guard to ensure filepath is a FITS file
+            if Path(self.filepath).suffix == ".fits":
+                os.system(f"rm {self.filepath}")
+
+            raise FITSException
 
         # If present, remove redundant polarisation/frequency axes from data cube
         if data.ndim == 4:

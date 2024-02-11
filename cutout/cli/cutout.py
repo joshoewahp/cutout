@@ -10,7 +10,7 @@ from astropy.coordinates import SkyCoord
 from astroutils.io import FITSException, get_surveys
 from astroutils.logger import setupLogger
 
-from cutout import ContourCutout, CornerMarker, Cutout
+from cutout import CornerMarker, Cutout
 
 SURVEYS = get_surveys()
 SURVEYS.set_index("survey", inplace=True)
@@ -48,16 +48,11 @@ logger = logging.getLogger(__name__)
     help="Survey data to use for contours.",
 )
 @click.option(
-    "-l",
-    "--clabels",
+    "-Q",
+    "--query-simbad",
     is_flag=True,
-    help="Display contour level labels.",
     default=False,
-)
-@click.option(
-    "--pm/--no-pm",
-    default=False,
-    help="Trigger proper motion correction for nearby stars.",
+    help="Query SIMBAD and apply proper motion corrections.",
 )
 @click.option(
     "-e",
@@ -193,8 +188,7 @@ logger = logging.getLogger(__name__)
 def main(
     size,
     contours,
-    clabels,
-    pm,
+    query_simbad,
     epoch,
     fieldname,
     sbid,
@@ -281,9 +275,7 @@ def main(
     size *= u.deg
 
     try:
-        CutoutClass = Cutout if not contours else ContourCutout
-
-        cutout = CutoutClass(
+        cutout = Cutout(
             survey,
             position,
             size=size,
@@ -296,7 +288,6 @@ def main(
             cmap=cmap,
             selavy=selavy,
             neighbours=neighbours,
-            contours=contours,
             band=band,
             vmin=vmin,
             vmax=vmax,
@@ -304,10 +295,17 @@ def main(
             compact=True,
         )
 
-        cutout.plot(clabels=clabels)
+        cutout.plot()
 
-        if pm:
-            cutout.correct_proper_motion()
+        if query_simbad:
+            simbad, newpos = cutout.query_simbad()
+            logger.info(f"SIMBAD results:\n {simbad.head()}")
+            cutout.add_markers(
+                newpos,
+                color="dodgerblue",
+                marker="x",
+                s=100,
+            )
 
         if corner:
             span = len(cutout.data) / 4
@@ -320,6 +318,9 @@ def main(
                 offset=offset,
             )
             cutout.add_cornermarker(corner)
+
+        if contours:
+            cutout.add_contours(contours, position)
 
         if psf:
             cutout.add_psf()

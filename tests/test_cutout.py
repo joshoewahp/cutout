@@ -10,7 +10,7 @@ from astropy.time import Time
 from astroutils.io import FITSException
 from astroutils.logger import setupLogger
 
-from cutout import CornerMarker, get_simbad
+from cutout import CornerMarker
 
 logger = logging.getLogger()
 
@@ -76,20 +76,6 @@ def test_cornermarker_line_parameters(ra, dec, image_products):
     assert marker.decline._yorig == [y + offset, y + span]
 
 
-def test_get_simbad(position):
-    pos = position("no_pm")
-    simbad = get_simbad(pos)
-
-    assert isinstance(simbad, pd.DataFrame)
-
-
-def test_get_simbad_no_results():
-    pos = SkyCoord(ra=191, dec=-80, unit="deg")
-    simbad = get_simbad(pos)
-
-    assert simbad is None
-
-
 def test_getattr_overload(cutout):
     """Need to check as we overload __getattr__ to avoid a RecursionError."""
     c = cutout()
@@ -126,20 +112,6 @@ def test_plot_setup_external_fig(cutout):
 def test_cutout_plot_options(cutout, options):
     c = cutout(options=options)
     c.plot()
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        {"rmslevels": True},
-        {"peaklevels": True},
-        {"clabels": True},
-        {"bar": True},
-    ],
-)
-def test_contourcutout_plot_options(cutout, options):
-    c = cutout(options=options, contours=True)
-    c.plot(**options)
 
 
 datekeys = [
@@ -249,17 +221,16 @@ def test_hide_coords(cutout, axis, ticks, labels):
     c.hide_coords(axis=axis, ticks=ticks, labels=labels)
 
 
-@pytest.mark.parametrize("neighbours", [True, False])
 @pytest.mark.parametrize("source", [True, False])
-@pytest.mark.parametrize("contours", [True, False])
+@pytest.mark.parametrize("neighbours", [True, False])
 @pytest.mark.parametrize("pos_err", [1 * u.arcsec, 0 * u.arcsec])
-def test_switch_to_offsets(cutout, contours, source, neighbours, pos_err):
+def test_switch_to_offsets(cutout, source, neighbours, pos_err):
     options = {
         "neighbours": neighbours,
         "source": source,
         "pos_err": pos_err,
     }
-    c = cutout(options=options, contours=contours)
+    c = cutout(options=options)
 
     c.plot()
     c.switch_to_offsets()
@@ -290,101 +261,11 @@ def test_save(cutout, cleanup_cache):
 
 
 @pytest.mark.parametrize(
-    "mjd, coord",
-    [
-        (None, "pm"),
-        (58000, "pm_offset"),
-    ],
-)
-def test_contourcutout_correct_proper_motion(
-    mjd,
-    coord,
-    cutout,
-    mock_simbad,
-    mocker,
-):
-    simbad = mock_simbad([coord])
-    mocker.patch("cutout.cutout.get_simbad", return_value=simbad)
-
-    c = cutout(contours=True, coord="pm")
-    c.plot()
-
-    c.correct_proper_motion(mjd=mjd)
-
-
-def test_contourcutout_correct_proper_motion_no_contour_mjd(cutout):
-    c = cutout(contours=True)
-    c.mjd = None
-
-    c.plot()
-
-    with pytest.raises(FITSException):
-        c.correct_proper_motion()
-
-
-def test_contourcutout_correct_proper_motion_no_radio_mjd(cutout):
-    c = cutout(contours=True)
-    c.radio.mjd = None
-
-    c.plot()
-
-    with pytest.raises(FITSException):
-        c.correct_proper_motion()
-
-
-def test_contourcutout_correct_proper_motion_no_simbad(
-    cutout,
-    mocker,
-    caplog,
-):
-    c = cutout(contours=True)
-
-    mocker.patch("cutout.cutout.get_simbad", return_value=None)
-
-    c.plot()
-    c.correct_proper_motion()
-
-    assert "No high proper-motion objects" in caplog.text
-
-
-@pytest.mark.parametrize("mjd", [None, 57000])
-def test_contourcutout_add_pm_location(
-    mjd,
-    cutout,
-    mock_simbad,
-    mocker,
-):
-    c = cutout(contours=True)
-
-    simbad = mock_simbad(["pm"])
-    mocker.patch("cutout.cutout.get_simbad", return_value=simbad)
-
-    c.plot()
-    c.correct_proper_motion(mjd)
-    c.add_pm_location()
-
-
-def test_contourcutout_add_pm_location_bad_order_raises_error(
-    cutout,
-    mock_simbad,
-    mocker,
-):
-    c = cutout(contours=True)
-
-    simbad = mock_simbad(["pm"])
-    mocker.patch("cutout.cutout.get_simbad", return_value=simbad)
-
-    with pytest.raises(FITSException):
-        c.plot()
-        c.add_pm_location()
-
-
-@pytest.mark.parametrize(
     "shift_epoch",
     [Time(2020.5, format="decimalyear"), None],
 )
 def test_add_contours(shift_epoch, cutout, position):
-    c = cutout(contours=True)
+    c = cutout()
     c.plot()
 
     c.add_contours(
@@ -395,7 +276,7 @@ def test_add_contours(shift_epoch, cutout, position):
 
 
 def test_add_contours_bad_levels_raise_error(cutout, position):
-    c = cutout(contours=True)
+    c = cutout()
     c.plot()
 
     with pytest.raises(ValueError):
@@ -407,7 +288,7 @@ def test_add_contours_bad_levels_raise_error(cutout, position):
 
 
 def test_shift_coordinate_grid(cutout, position):
-    c = cutout(contours=True)
+    c = cutout()
 
     c.plot()
     c.shift_coordinate_grid(
