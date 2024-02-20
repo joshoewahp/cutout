@@ -5,7 +5,7 @@ description = ""
 authors = ["Joshua <jpri6587@sydney.edu.au>"]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">3.9,<4.0"
 numpy = "^1.22.2"
 matplotlib = "^3.8.2"
 astropy = "^6.0.0"
