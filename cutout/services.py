@@ -55,6 +55,7 @@ class CutoutService(ABC):
 
         band = f"_{cutout.band}" if "band" in cutout.__dict__ else ""
         path = f"{cutout.size.value*60:.4f}arcmin_{cutout.ra:.4f}_{cutout.dec:.4f}{band}.fits"
+
         self.filepath = cutout_cache / cutout.survey / path
 
     @abstractmethod
@@ -423,10 +424,12 @@ class SkyviewCutout(CutoutService):
 
             try:
                 sv = SkyView()
+                size = max(cutout.size, 0.2*u.deg)
+
                 hdul = sv.get_images(
                     position=cutout.position,
                     survey=[skyview_key],
-                    radius=cutout.size,
+                    radius=size,
                     show_progress=False,
                 )[0][0]
             except (IndexError, HTTPError) as e:
